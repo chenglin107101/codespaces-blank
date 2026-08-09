@@ -7,7 +7,7 @@ import streamlit as st
 # ==========================================
 ADMIN_USER = "謝正凜"
 
-# 1. 初始化資料庫 (僅需陣容與每日得分表)
+# 1. 初始化資料庫
 conn = sqlite3.connect("fantasy.db", check_same_thread=False)
 c = conn.cursor()
 
@@ -33,7 +33,7 @@ c.execute("""
 conn.commit()
 
 st.set_page_config(page_title="阿凜的中職夢幻聯賽", page_icon="⚾", layout="wide")
-st.title("⚾阿凜的中職夢幻聯賽")
+st.title("⚾ 阿凜的中職夢幻聯賽")
 
 # 2. 側邊欄：簡單暱稱輸入
 st.sidebar.title("👤 玩家身分驗證")
@@ -72,11 +72,9 @@ def calculate_player_score(row):
 
   total_hits = b1 + b2 + b3 + hr
 
-  # 完全打擊 (1B, 2B, 3B, HR 各至少 1 支)
   if b1 >= 1 and b2 >= 1 and b3 >= 1 and hr >= 1:
     score += 30
 
-  # 安打成就加碼
   if total_hits >= 6:
     score += 20
   elif total_hits == 5:
@@ -192,6 +190,27 @@ else:
             conn.commit()
             st.success(f"🎉 {game_date} 的守備陣容已成功儲存！")
 
+    # 🔍 查看其他玩家排的陣容
+    st.divider()
+    st.subheader(f"👀 {game_date} 所有玩家已提交陣容")
+    df_all_lineups = pd.read_sql_query(
+        """
+            SELECT username AS 玩家, catcher AS 捕手, 
+                   if1 AS 內野1, if2 AS 內野2, if3 AS 內野3, if4 AS 內野4,
+                   of1 AS 外野1, of2 AS 外野2, of3 AS 外野3,
+                   dh AS 指定打擊
+            FROM lineups 
+            WHERE date = ?
+        """,
+        conn,
+        params=(game_date,),
+    )
+
+    if df_all_lineups.empty:
+      st.info(f"尚無玩家提交 {game_date} 的陣容。")
+    else:
+      st.dataframe(df_all_lineups, use_container_width=True)
+
   # TAB 2: 排行榜
   with tab2:
     st.subheader("📅 單日玩家得分榜")
@@ -226,7 +245,7 @@ else:
 
   # TAB 3: 計分規則
   with tab3:
-    st.header("📜 CPBL 夢幻聯賽 - 計分規則總覽")
+    st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
     col1, col2 = st.columns(2)
     with col1:
