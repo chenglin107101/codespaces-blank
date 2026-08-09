@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from st_gsheets_connection import GSheetsConnection
+from streamlit_gsheets_connection import GSheetsConnection
 
 st.set_page_config(page_title="阿凜的中職夢幻聯賽", page_icon="⚾", layout="wide")
 st.title("⚾ 阿凜的中職夢幻聯賽")
