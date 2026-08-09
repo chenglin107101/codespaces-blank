@@ -188,7 +188,6 @@ else:
           elif len(selected_all) != len(set(selected_all)):
             st.error("⚠️ 陣容中有重複選擇的球員，請重新檢查！")
           else:
-            # 取得台灣當前時間 (YYYY-MM-DD HH:MM:SS)
             tw_tz = pytz.timezone("Asia/Taipei")
             now_str = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -208,45 +207,48 @@ else:
       df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
       df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
 
-      # 重新整理欄位順序，將提交時間放最前方或最後方
-      cols = list(df_display.columns)
-      if "submit_time" in cols:
-        # 重新命名欄位讓介面更美觀
-        rename_dict = {
-            "username": "玩家",
-            "date": "比賽日期",
-            "catcher": "捕手",
-            "if1": "內野1",
-            "if2": "內野2",
-            "if3": "內野3",
-            "if4": "內野4",
-            "of1": "外野1",
-            "of2": "外野2",
-            "of3": "外野3",
-            "dh": "指定打擊",
-            "submit_time": "最後提交時間",
-        }
-        df_display = df_display.rename(columns=rename_dict)
+      rename_dict = {
+          "username": "玩家",
+          "date": "比賽日期",
+          "catcher": "捕手",
+          "if1": "內野1",
+          "if2": "內野2",
+          "if3": "內野3",
+          "if4": "內野4",
+          "of1": "外野1",
+          "of2": "外野2",
+          "of3": "外野3",
+          "dh": "指定打擊",
+          "submit_time": "最後提交時間",
+      }
+      df_display = df_display.rename(columns=rename_dict)
     else:
       df_display = pd.DataFrame()
 
     if df_display.empty:
       st.info(f"尚無玩家提交 {game_date} 的陣容。")
     else:
-      st.dataframe(df_display, use_container_width=True)
+      st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜
+  # TAB 2: 排行榜 (美化修正名次顯示)
   with tab2:
     st.subheader("📅 單日玩家得分榜")
     df_cloud_scores = read_sheet("daily_scores")
 
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
-      df_s = df_cloud_scores
+      df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
-      st.dataframe(
-          df_s.sort_values(by=["date", "score"], ascending=[False, False]),
-          use_container_width=True,
-      )
+
+      # 依照日期與分數排序，並重置索引建立名次欄位
+      df_s = df_s.sort_values(
+          by=["date", "score"], ascending=[False, False]
+      ).reset_index(drop=True)
+      df_s.index = df_s.index + 1  # 名次從 1 開始
+
+      rename_daily = {"username": "玩家", "date": "比賽日期", "score": "當日得分"}
+      df_s_display = df_s.rename(columns=rename_daily)
+
+      st.dataframe(df_s_display, use_container_width=True)
 
       st.divider()
       st.subheader("🏆 賽季玩家累計總積分榜")
@@ -255,8 +257,11 @@ else:
           .sum()
           .reset_index()
           .sort_values(by="score", ascending=False)
+          .reset_index(drop=True)
       )
-      df_total.columns = ["玩家", "總積分"]
+      df_total.index = df_total.index + 1  # 名次從 1 開始
+      df_total.columns = ["玩家", "累計總積分"]
+
       st.dataframe(df_total, use_container_width=True)
     else:
       st.info("尚無單日結算紀錄。")
