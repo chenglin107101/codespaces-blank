@@ -1,7 +1,9 @@
+from datetime import datetime
 import json
 import urllib.parse
 import urllib.request
 import pandas as pd
+import pytz
 import streamlit as st
 
 # 設定網頁標題與排版
@@ -28,7 +30,6 @@ def read_sheet(sheet_name):
   url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
   try:
     df = pd.read_csv(url)
-    # 確保欄位名稱都是字串並移除空白
     df.columns = [str(c).strip() for c in df.columns]
     return df
   except Exception as e:
@@ -64,7 +65,7 @@ else:
   st.session_state.user = None
 
 
-# 3. 球員單日得分計算核心邏輯
+# 球員單日得分計算核心邏輯
 def calculate_player_score(row):
   b1 = int(row.get("1B", 0))
   b2 = int(row.get("2B", 0))
@@ -187,10 +188,14 @@ else:
           elif len(selected_all) != len(set(selected_all)):
             st.error("⚠️ 陣容中有重複選擇的球員，請重新檢查！")
           else:
-            row_data = [st.session_state.user, game_date, *selected_all]
+            # 取得台灣當前時間 (YYYY-MM-DD HH:MM:SS)
+            tw_tz = pytz.timezone("Asia/Taipei")
+            now_str = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+            row_data = [st.session_state.user, game_date, *selected_all, now_str]
             if write_to_sheet("lineups", row_data):
               st.success(
-                  f"🎉 {game_date} 的守備陣容已成功上傳至雲端 Google 試算表！"
+                  f"🎉 {game_date} 的守備陣容已成功上傳！（提交時間：{now_str}）"
               )
               st.rerun()
 
@@ -202,6 +207,26 @@ else:
     if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
       df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
       df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
+
+      # 重新整理欄位順序，將提交時間放最前方或最後方
+      cols = list(df_display.columns)
+      if "submit_time" in cols:
+        # 重新命名欄位讓介面更美觀
+        rename_dict = {
+            "username": "玩家",
+            "date": "比賽日期",
+            "catcher": "捕手",
+            "if1": "內野1",
+            "if2": "內野2",
+            "if3": "內野3",
+            "if4": "內野4",
+            "of1": "外野1",
+            "of2": "外野2",
+            "of3": "外野3",
+            "dh": "指定打擊",
+            "submit_time": "最後提交時間",
+        }
+        df_display = df_display.rename(columns=rename_dict)
     else:
       df_display = pd.DataFrame()
 
