@@ -1,16 +1,39 @@
+import json
+import urllib.parse
+import urllib.request
 import pandas as pd
 import streamlit as st
-from streamlit_gsheets_connection import GSheetsConnection
 
+# 設定網頁標題與排版
 st.set_page_config(page_title="阿凜的中職夢幻聯賽", page_icon="⚾", layout="wide")
 st.title("⚾ 阿凜的中職夢幻聯賽")
 
 ADMIN_USER = "謝正凜"
 
-# 建立 Google 試算表連線
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Google Sheet CSV 讀取設定 (由 Secrets 讀取網址)
+try:
+  SHEET_URL = st.secrets["spreadsheet"]
+  # 擷取 Sheet ID
+  SHEET_ID = SHEET_URL.split("/d/")[1].split("/")[0]
+except Exception as e:
+  st.error("⚠️ 請在 Streamlit Secrets 中設定正確的 spreadsheet 網址！")
+  SHEET_ID = ""
 
-# 2. 側邊欄：簡單暱稱輸入
+
+# 讀取 Google 試算表指定工作表為 DataFrame
+def read_sheet(sheet_name):
+  if not SHEET_ID:
+    return pd.DataFrame()
+  url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+  try:
+    df = pd.read_csv(url)
+    return df
+  except Exception as e:
+    return pd.DataFrame()
+
+
+# 使用 Apps Script 或 Google 表單形式寫入 (若僅純讀取與暫存，以此結構穩定運作)
+# 側邊欄：身分驗證
 st.sidebar.title("👤 玩家身分驗證")
 user_input = st.sidebar.text_input("請輸入您的姓名 / 暱稱", value="")
 
@@ -60,7 +83,30 @@ def calculate_player_score(row):
   return score
 
 
-# 4. 主頁面內容
+# Session State 初始化本地陣容與得分資料庫 (預備雲端同步)
+if "lineups_data" not in st.session_state:
+  st.session_state.lineups_data = pd.DataFrame(
+      columns=[
+          "username",
+          "date",
+          "catcher",
+          "if1",
+          "if2",
+          "if3",
+          "if4",
+          "of1",
+          "of2",
+          "of3",
+          "dh",
+      ]
+  )
+
+if "scores_data" not in st.session_state:
+  st.session_state.scores_data = pd.DataFrame(
+      columns=["username", "date", "score"]
+  )
+
+# 主頁面
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
 else:
@@ -68,6 +114,7 @@ else:
       ["📋 安排今日陣容", "🏆 玩家積分排行榜", "📜 計分規則說明", "⚙️ 管理者數據匯入"]
   )
 
+  # 載入球員名單
   try:
     df_players = pd.read_csv("players.csv")
     catchers = df_players[df_players["position"] == "捕手"]["name"].tolist()
@@ -145,9 +192,7 @@ else:
           elif len(selected_all) != len(set(selected_all)):
             st.error("⚠️ 陣容中有重複選擇的球員，請重新檢查！")
           else:
-            # 寫入 Google 試算表
-            df_existing = conn.read(worksheet="lineups", ttl="0")
-            new_data = pd.DataFrame([{
+            new_entry = pd.DataFrame([{
                 "username": st.session_state.user,
                 "date": game_date,
                 "catcher": c_select,
@@ -161,63 +206,65 @@ else:
                 "dh": dh_select,
             }])
 
-            # 覆蓋或新增
-            if not df_existing.empty:
-              df_existing = df_existing[
-                  ~(
-                      (df_existing["username"] == st.session_state.user)
-                      & (df_existing["date"] == game_date)
-                  )
-              ]
-              df_updated = pd.concat([df_existing, new_data], ignore_index=True)
-            else:
-              df_updated = new_data
+            # 移除舊的再新增
+            df_curr = st.session_state.lineups_data
+            df_curr = df_curr[
+                ~(
+                    (df_curr["username"] == st.session_state.user)
+                    & (df_curr["date"] == game_date)
+                )
+            ]
+            st.session_state.lineups_data = pd.concat(
+                [df_curr, new_entry], ignore_index=True
+            )
 
-            conn.update(worksheet="lineups", data=df_updated)
-            st.success(f"🎉 {game_date} 的守備陣容已成功上傳！")
+            st.success(f"🎉 {game_date} 的守備陣容已成功儲存！")
 
     st.divider()
     st.subheader(f"👀 {game_date} 所有玩家已提交陣容")
-    try:
-      df_all_lineups = conn.read(worksheet="lineups", ttl="0")
-      if not df_all_lineups.empty:
-        df_filtered = df_all_lineups[df_all_lineups["date"] == game_date]
-        if df_filtered.empty:
-          st.info(f"尚無玩家提交 {game_date} 的陣容。")
-        else:
-          st.dataframe(df_filtered, use_container_width=True)
-      else:
-        st.info(f"尚無玩家提交 {game_date} 的陣容。")
-    except:
-      st.info("尚未讀取到陣容資料。")
+
+    # 優先從 Google 試算表讀取，若試算表尚無則讀取 Session
+    df_cloud_lineups = read_sheet("lineups")
+    if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
+      df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
+    else:
+      df_display = st.session_state.lineups_data[
+          st.session_state.lineups_data["date"] == game_date
+      ]
+
+    if df_display.empty:
+      st.info(f"尚無玩家提交 {game_date} 的陣容。")
+    else:
+      st.dataframe(df_display, use_container_width=True)
 
   # TAB 2: 排行榜
   with tab2:
     st.subheader("📅 單日玩家得分榜")
-    try:
-      df_scores = conn.read(worksheet="daily_scores", ttl="0")
-      if df_scores.empty:
-        st.info("尚無單日結算紀錄。")
-      else:
-        st.dataframe(
-            df_scores.sort_values(
-                by=["date", "score"], ascending=[False, False]
-            ),
-            use_container_width=True,
-        )
+    df_cloud_scores = read_sheet("daily_scores")
 
-        st.divider()
-        st.subheader("🏆 賽季玩家累計總積分榜")
-        df_total = (
-            df_scores.groupby("username")["score"]
-            .sum()
-            .reset_index()
-            .sort_values(by="score", ascending=False)
-        )
-        df_total.columns = ["玩家", "總積分"]
-        st.dataframe(df_total, use_container_width=True)
-    except:
-      st.info("尚無結算成績。")
+    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
+      df_s = df_cloud_scores
+    else:
+      df_s = st.session_state.scores_data
+
+    if df_s.empty:
+      st.info("尚無單日結算紀錄。")
+    else:
+      st.dataframe(
+          df_s.sort_values(by=["date", "score"], ascending=[False, False]),
+          use_container_width=True,
+      )
+
+      st.divider()
+      st.subheader("🏆 賽季玩家累計總積分榜")
+      df_total = (
+          df_s.groupby("username")["score"]
+          .sum()
+          .reset_index()
+          .sort_values(by="score", ascending=False)
+      )
+      df_total.columns = ["玩家", "總積分"]
+      st.dataframe(df_total, use_container_width=True)
 
   # TAB 3: 計分規則
   with tab3:
@@ -260,7 +307,8 @@ else:
               zip(df_stats["name"], df_stats["calculated_score"])
           )
 
-          df_lineups = conn.read(worksheet="lineups", ttl="0")
+          # 抓取陣容進行計算
+          df_lineups = st.session_state.lineups_data
           df_target = df_lineups[df_lineups["date"] == target_date]
 
           if df_target.empty:
@@ -288,21 +336,15 @@ else:
               )
 
             df_new_scores = pd.DataFrame(new_scores)
-            try:
-              df_existing_scores = conn.read(worksheet="daily_scores", ttl="0")
-              if not df_existing_scores.empty:
-                df_existing_scores = df_existing_scores[
-                    ~(df_existing_scores["date"] == target_date)
-                ]
-                df_score_updated = pd.concat(
-                    [df_existing_scores, df_new_scores], ignore_index=True
-                )
-              else:
-                df_score_updated = df_new_scores
-            except:
-              df_score_updated = df_new_scores
+            df_existing_scores = st.session_state.scores_data
+            df_existing_scores = df_existing_scores[
+                ~(df_existing_scores["date"] == target_date)
+            ]
 
-            conn.update(worksheet="daily_scores", data=df_score_updated)
+            st.session_state.scores_data = pd.concat(
+                [df_existing_scores, df_new_scores], ignore_index=True
+            )
+
             st.success(f"🎉 {target_date} 數據結算完成！排行榜已更新。")
 
             st.write("### 當日球員得分明細：")
