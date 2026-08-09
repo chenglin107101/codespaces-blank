@@ -1,39 +1,14 @@
-import sqlite3
 import pandas as pd
 import streamlit as st
-
-# ==========================================
-# ⚙️ 系統設定：唯一的管理者暱稱
-# ==========================================
-ADMIN_USER = "謝正凜"
-
-# 1. 初始化資料庫
-conn = sqlite3.connect("fantasy.db", check_same_thread=False)
-c = conn.cursor()
-
-c.execute("""
-    CREATE TABLE IF NOT EXISTS lineups (
-        username TEXT,
-        date TEXT,
-        catcher TEXT,
-        if1 TEXT, if2 TEXT, if3 TEXT, if4 TEXT,
-        of1 TEXT, of2 TEXT, of3 TEXT,
-        dh TEXT,
-        PRIMARY KEY(username, date)
-    )
-""")
-c.execute("""
-    CREATE TABLE IF NOT EXISTS daily_scores (
-        username TEXT,
-        date TEXT,
-        score REAL,
-        PRIMARY KEY(username, date)
-    )
-""")
-conn.commit()
+from streamlit_gsheets_connection import GSheetsConnection
 
 st.set_page_config(page_title="阿凜的中職夢幻聯賽", page_icon="⚾", layout="wide")
 st.title("⚾ 阿凜的中職夢幻聯賽")
+
+ADMIN_USER = "謝正凜"
+
+# 建立 Google 試算表連線
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 # 2. 側邊欄：簡單暱稱輸入
 st.sidebar.title("👤 玩家身分驗證")
@@ -69,12 +44,10 @@ def calculate_player_score(row):
       + (sb * 3)
       - (so * 3)
   )
-
   total_hits = b1 + b2 + b3 + hr
 
   if b1 >= 1 and b2 >= 1 and b3 >= 1 and hr >= 1:
     score += 30
-
   if total_hits >= 6:
     score += 20
   elif total_hits == 5:
@@ -95,7 +68,6 @@ else:
       ["📋 安排今日陣容", "🏆 玩家積分排行榜", "📜 計分規則說明", "⚙️ 管理者數據匯入"]
   )
 
-  # 讀取球員名單
   try:
     df_players = pd.read_csv("players.csv")
     catchers = df_players[df_players["position"] == "捕手"]["name"].tolist()
@@ -124,12 +96,9 @@ else:
       st.error("⚠️ 找不到 players.csv 或內容格式不正確，請檢查檔案！")
     else:
       with st.form("position_lineup_form"):
-        st.markdown("### 🥊 捕手 (選 1 人)")
         c_select = st.selectbox(
-            "捕手", options=["-- 請選擇 --"] + catchers, key="pos_c"
+            "捕手 (1人)", options=["-- 請選擇 --"] + catchers, key="pos_c"
         )
-
-        st.markdown("### ⚾ 內野手 (選 4 人)")
         if1 = st.selectbox(
             "內野手 1", options=["-- 請選擇 --"] + infielders, key="pos_if1"
         )
@@ -142,8 +111,6 @@ else:
         if4 = st.selectbox(
             "內野手 4", options=["-- 請選擇 --"] + infielders, key="pos_if4"
         )
-
-        st.markdown("### 🏃 外野手 (選 3 人)")
         of1 = st.selectbox(
             "外野手 1", options=["-- 請選擇 --"] + outfielders, key="pos_of1"
         )
@@ -153,8 +120,6 @@ else:
         of3 = st.selectbox(
             "外野手 3", options=["-- 請選擇 --"] + outfielders, key="pos_of3"
         )
-
-        st.markdown("### 💥 指定打擊 / DH (全打者皆可選 1 人)")
         dh_select = st.selectbox(
             "指定打擊 (DH)",
             options=["-- 請選擇 --"] + all_batters,
@@ -180,116 +145,99 @@ else:
           elif len(selected_all) != len(set(selected_all)):
             st.error("⚠️ 陣容中有重複選擇的球員，請重新檢查！")
           else:
-            c.execute(
-                """
-                            INSERT OR REPLACE INTO lineups 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                (st.session_state.user, game_date, *selected_all),
-            )
-            conn.commit()
-            st.success(f"🎉 {game_date} 的守備陣容已成功儲存！")
+            # 寫入 Google 試算表
+            df_existing = conn.read(worksheet="lineups", ttl="0")
+            new_data = pd.DataFrame([{
+                "username": st.session_state.user,
+                "date": game_date,
+                "catcher": c_select,
+                "if1": if1,
+                "if2": if2,
+                "if3": if3,
+                "if4": if4,
+                "of1": of1,
+                "of2": of2,
+                "of3": of3,
+                "dh": dh_select,
+            }])
 
-    # 🔍 查看其他玩家排的陣容
+            # 覆蓋或新增
+            if not df_existing.empty:
+              df_existing = df_existing[
+                  ~(
+                      (df_existing["username"] == st.session_state.user)
+                      & (df_existing["date"] == game_date)
+                  )
+              ]
+              df_updated = pd.concat([df_existing, new_data], ignore_index=True)
+            else:
+              df_updated = new_data
+
+            conn.update(worksheet="lineups", data=df_updated)
+            st.success(f"🎉 {game_date} 的守備陣容已成功上傳！")
+
     st.divider()
     st.subheader(f"👀 {game_date} 所有玩家已提交陣容")
-    df_all_lineups = pd.read_sql_query(
-        """
-            SELECT username AS 玩家, catcher AS 捕手, 
-                   if1 AS 內野1, if2 AS 內野2, if3 AS 內野3, if4 AS 內野4,
-                   of1 AS 外野1, of2 AS 外野2, of3 AS 外野3,
-                   dh AS 指定打擊
-            FROM lineups 
-            WHERE date = ?
-        """,
-        conn,
-        params=(game_date,),
-    )
-
-    if df_all_lineups.empty:
-      st.info(f"尚無玩家提交 {game_date} 的陣容。")
-    else:
-      st.dataframe(df_all_lineups, use_container_width=True)
+    try:
+      df_all_lineups = conn.read(worksheet="lineups", ttl="0")
+      if not df_all_lineups.empty:
+        df_filtered = df_all_lineups[df_all_lineups["date"] == game_date]
+        if df_filtered.empty:
+          st.info(f"尚無玩家提交 {game_date} 的陣容。")
+        else:
+          st.dataframe(df_filtered, use_container_width=True)
+      else:
+        st.info(f"尚無玩家提交 {game_date} 的陣容。")
+    except:
+      st.info("尚未讀取到陣容資料。")
 
   # TAB 2: 排行榜
   with tab2:
     st.subheader("📅 單日玩家得分榜")
-    df_daily = pd.read_sql_query(
-        """
-            SELECT date AS 日期, username AS 玩家, score AS 當日得分 
-            FROM daily_scores 
-            ORDER BY date DESC, score DESC
-        """,
-        conn,
-    )
-    if df_daily.empty:
-      st.info("尚無單日結算紀錄。")
-    else:
-      st.dataframe(df_daily, use_container_width=True)
+    try:
+      df_scores = conn.read(worksheet="daily_scores", ttl="0")
+      if df_scores.empty:
+        st.info("尚無單日結算紀錄。")
+      else:
+        st.dataframe(
+            df_scores.sort_values(
+                by=["date", "score"], ascending=[False, False]
+            ),
+            use_container_width=True,
+        )
 
-    st.divider()
-    st.subheader("🏆 賽季玩家累計總積分榜")
-    df_total = pd.read_sql_query(
-        """
-            SELECT username AS 玩家, SUM(score) AS 總積分 
-            FROM daily_scores 
-            GROUP BY username 
-            ORDER BY 總積分 DESC
-        """,
-        conn,
-    )
-    if df_total.empty:
-      st.info("尚無累計成績。")
-    else:
-      st.dataframe(df_total, use_container_width=True)
+        st.divider()
+        st.subheader("🏆 賽季玩家累計總積分榜")
+        df_total = (
+            df_scores.groupby("username")["score"]
+            .sum()
+            .reset_index()
+            .sort_values(by="score", ascending=False)
+        )
+        df_total.columns = ["玩家", "總積分"]
+        st.dataframe(df_total, use_container_width=True)
+    except:
+      st.info("尚無結算成績。")
 
   # TAB 3: 計分規則
   with tab3:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
+    st.markdown("""
+        * **一壘安打 ($1B$)**：`+3 分` | **二壘安打 ($2B$)**：`+6 分` | **三壘安打 ($3B$)**：`+10 分` | **全壘打 ($HR$)**：`+15 分`
+        * **四死球 ($BB$)**：`+2 分` | **打點 ($RBI$)**：`+2 分` | **盜壘 ($SB$)**：`+3 分` | **三振 ($SO$)**：`-3 分`
+        * **猛打賞(3H)**：`+4` | **鐵支(4H)**：`+7` | **5H**：`+12` | **6H**：`+20` | **完全打擊**：`+30`
+        """)
 
-    col1, col2 = st.columns(2)
-    with col1:
-      st.subheader("⚾ 基礎打擊項目")
-      st.markdown("""
-            * **一壘安打 ($1B$)**：`+3 分`
-            * **二壘安打 ($2B$)**：`+6 分`
-            * **三壘安打 ($3B$)**：`+10 分`
-            * **全壘打 ($HR$)**：`+15 分`
-            * **四死球保送 ($BB$)**：`+2 分`
-            * **打點 ($RBI$)**：`每 1 分打點 +2 分`
-            * **盜壘成功 ($SB$)**：`+3 分`
-            * **被三振 ($SO$)**：`-3 分`
-            """)
-
-    with col2:
-      st.subheader("🔥 特殊成就額外加碼")
-      st.markdown("""
-            * **猛打賞 (單場 3 安打)**：額外 `+4 分`
-            * **鐵支 (單場 4 安打)**：額外 `+7 分`
-            * **五支安打 (單場 5 安打)**：額外 `+12 分`
-            * **六支安打 (單場 6 安打)**：額外 `+20 分`
-            * **完全打擊 (單場達成 1B+2B+3B+HR)**：額外 `+30 分`
-            
-            *(註：安打成就採最高階梯採計，不重複疊加)*
-            """)
-
-  # TAB 4: 管理者數據匯入 (限定 謝正凜 操作)
+  # TAB 4: 管理者結算
   with tab4:
     st.header("⚙️ 每日比賽數據匯入與分數結算")
 
     if st.session_state.user != ADMIN_USER:
-      st.error(
-          f"🔒 權限不足：只有管理者【{ADMIN_USER}】可以進入此頁面進行數據結算！"
-      )
+      st.error(f"🔒 權限不足：只有管理者【{ADMIN_USER}】可進行結算！")
     else:
       target_date = st.date_input("選擇要結算的比賽日期", key="admin_date").strftime(
           "%Y-%m-%d"
       )
-
-      st.markdown("""
-            **請在下方貼上當天的打擊數據 CSV 文字：**  
-            格式需求：`name,1B,2B,3B,HR,RBI,BB,SB,SO`
-            """)
 
       default_csv_example = """name,1B,2B,3B,HR,RBI,BB,SB,SO
 陳傑憲,2,1,0,0,1,1,1,0
@@ -305,7 +253,6 @@ else:
           from io import StringIO
 
           df_stats = pd.read_csv(StringIO(raw_data))
-
           df_stats["calculated_score"] = df_stats.apply(
               calculate_player_score, axis=1
           )
@@ -313,29 +260,49 @@ else:
               zip(df_stats["name"], df_stats["calculated_score"])
           )
 
-          c.execute(
-              "SELECT username, catcher, if1, if2, if3, if4, of1, of2, of3, dh"
-              " FROM lineups WHERE date=?",
-              (target_date,),
-          )
-          user_lineups = c.fetchall()
+          df_lineups = conn.read(worksheet="lineups", ttl="0")
+          df_target = df_lineups[df_lineups["date"] == target_date]
 
-          if not user_lineups:
+          if df_target.empty:
             st.warning(f"⚠️ {target_date} 沒有任何玩家提交陣容！")
           else:
-            for row in user_lineups:
-              u_name = row[0]
-              players_selected = row[1:]
+            new_scores = []
+            for _, row in df_target.iterrows():
+              u_name = row["username"]
+              players_selected = [
+                  row["catcher"],
+                  row["if1"],
+                  row["if2"],
+                  row["if3"],
+                  row["if4"],
+                  row["of1"],
+                  row["of2"],
+                  row["of3"],
+                  row["dh"],
+              ]
               total_team_score = sum(
                   [player_score_dict.get(p, 0) for p in players_selected]
               )
-
-              c.execute(
-                  "INSERT OR REPLACE INTO daily_scores VALUES (?, ?, ?)",
-                  (u_name, target_date, total_team_score),
+              new_scores.append(
+                  {"username": u_name, "date": target_date, "score": total_team_score}
               )
 
-            conn.commit()
+            df_new_scores = pd.DataFrame(new_scores)
+            try:
+              df_existing_scores = conn.read(worksheet="daily_scores", ttl="0")
+              if not df_existing_scores.empty:
+                df_existing_scores = df_existing_scores[
+                    ~(df_existing_scores["date"] == target_date)
+                ]
+                df_score_updated = pd.concat(
+                    [df_existing_scores, df_new_scores], ignore_index=True
+                )
+              else:
+                df_score_updated = df_new_scores
+            except:
+              df_score_updated = df_new_scores
+
+            conn.update(worksheet="daily_scores", data=df_score_updated)
             st.success(f"🎉 {target_date} 數據結算完成！排行榜已更新。")
 
             st.write("### 當日球員得分明細：")
@@ -344,4 +311,4 @@ else:
             )
 
         except Exception as e:
-          st.error(f"❌ 數據格式有誤，請檢查欄位！錯誤訊息: {e}")
+          st.error(f"❌ 數據格式有誤！錯誤訊息: {e}")
