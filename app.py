@@ -102,7 +102,7 @@ def calculate_player_score(row):
   return score
 
 
-# 尋找選項在清單中的索引位置（找不到則回傳 0，即預設選單）
+# 尋找選項在清單中的索引位置
 def get_index(options, target_val):
   if target_val in options:
     return options.index(target_val)
@@ -149,13 +149,15 @@ else:
       df_cloud_lineups = read_sheet("lineups")
 
       # 預設上次歷史紀錄
+      has_history = False
       last_lineup = {}
       if not df_cloud_lineups.empty and "username" in df_cloud_lineups.columns:
+        df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
         user_lineups = df_cloud_lineups[
             df_cloud_lineups["username"] == st.session_state.user
         ]
         if not user_lineups.empty:
-          # 優先找當天，若當天沒有則抓最新一次提交的陣容
+          has_history = True
           if game_date in user_lineups["date"].values:
             last_lineup = user_lineups[
                 user_lineups["date"] == game_date
@@ -169,18 +171,40 @@ else:
       dh_options = ["-- 請選擇 --"] + all_batters
 
       # 取得預設選擇的 index
-      idx_c = get_index(c_options, last_lineup.get("catcher", ""))
-      idx_if1 = get_index(if_options, last_lineup.get("if1", ""))
-      idx_if2 = get_index(if_options, last_lineup.get("if2", ""))
-      idx_if3 = get_index(if_options, last_lineup.get("if3", ""))
-      idx_if4 = get_index(if_options, last_lineup.get("if4", ""))
-      idx_of1 = get_index(of_options, last_lineup.get("of1", ""))
-      idx_of2 = get_index(of_options, last_lineup.get("of2", ""))
-      idx_of3 = get_index(of_options, last_lineup.get("of3", ""))
-      idx_dh = get_index(dh_options, last_lineup.get("dh", ""))
+      idx_c = (
+          get_index(c_options, last_lineup.get("catcher", ""))
+          if has_history
+          else 0
+      )
+      idx_if1 = (
+          get_index(if_options, last_lineup.get("if1", "")) if has_history else 0
+      )
+      idx_if2 = (
+          get_index(if_options, last_lineup.get("if2", "")) if has_history else 0
+      )
+      idx_if3 = (
+          get_index(if_options, last_lineup.get("if3", "")) if has_history else 0
+      )
+      idx_if4 = (
+          get_index(if_options, last_lineup.get("if4", "")) if has_history else 0
+      )
+      idx_of1 = (
+          get_index(of_options, last_lineup.get("of1", "")) if has_history else 0
+      )
+      idx_of2 = (
+          get_index(of_options, last_lineup.get("of2", "")) if has_history else 0
+      )
+      idx_of3 = (
+          get_index(of_options, last_lineup.get("of3", "")) if has_history else 0
+      )
+      idx_dh = (
+          get_index(dh_options, last_lineup.get("dh", "")) if has_history else 0
+      )
 
-      if last_lineup != {}:
-        st.caption("💡 已為您自動帶入上一次提交的陣容，可直接修改或點擊下方按鈕儲存。")
+      if has_history:
+        st.caption(
+            "💡 已為您自動帶入歷史提交陣容，可直接修改或點擊下方按鈕儲存。"
+        )
 
       with st.form("position_lineup_form"):
         c_select = st.selectbox(
