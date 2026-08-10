@@ -102,6 +102,13 @@ def calculate_player_score(row):
   return score
 
 
+# 尋找選項在清單中的索引位置（找不到則回傳 0，即預設選單）
+def get_index(options, target_val):
+  if target_val in options:
+    return options.index(target_val)
+  return 0
+
+
 # 主頁面
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
@@ -138,35 +145,70 @@ else:
     if df_players.empty:
       st.error("⚠️ 找不到 players.csv 或內容格式不正確，請檢查檔案！")
     else:
+      # 讀取雲端試算表歷史陣容
+      df_cloud_lineups = read_sheet("lineups")
+
+      # 預設上次歷史紀錄
+      last_lineup = {}
+      if not df_cloud_lineups.empty and "username" in df_cloud_lineups.columns:
+        user_lineups = df_cloud_lineups[
+            df_cloud_lineups["username"] == st.session_state.user
+        ]
+        if not user_lineups.empty:
+          # 優先找當天，若當天沒有則抓最新一次提交的陣容
+          if game_date in user_lineups["date"].values:
+            last_lineup = user_lineups[
+                user_lineups["date"] == game_date
+            ].iloc[-1]
+          else:
+            last_lineup = user_lineups.iloc[-1]
+
+      c_options = ["-- 請選擇 --"] + catchers
+      if_options = ["-- 請選擇 --"] + infielders
+      of_options = ["-- 請選擇 --"] + outfielders
+      dh_options = ["-- 請選擇 --"] + all_batters
+
+      # 取得預設選擇的 index
+      idx_c = get_index(c_options, last_lineup.get("catcher", ""))
+      idx_if1 = get_index(if_options, last_lineup.get("if1", ""))
+      idx_if2 = get_index(if_options, last_lineup.get("if2", ""))
+      idx_if3 = get_index(if_options, last_lineup.get("if3", ""))
+      idx_if4 = get_index(if_options, last_lineup.get("if4", ""))
+      idx_of1 = get_index(of_options, last_lineup.get("of1", ""))
+      idx_of2 = get_index(of_options, last_lineup.get("of2", ""))
+      idx_of3 = get_index(of_options, last_lineup.get("of3", ""))
+      idx_dh = get_index(dh_options, last_lineup.get("dh", ""))
+
+      if last_lineup != {}:
+        st.caption("💡 已為您自動帶入上一次提交的陣容，可直接修改或點擊下方按鈕儲存。")
+
       with st.form("position_lineup_form"):
         c_select = st.selectbox(
-            "捕手 (1人)", options=["-- 請選擇 --"] + catchers, key="pos_c"
+            "捕手 (1人)", options=c_options, index=idx_c, key="pos_c"
         )
         if1 = st.selectbox(
-            "內野手 1", options=["-- 請選擇 --"] + infielders, key="pos_if1"
+            "內野手 1", options=if_options, index=idx_if1, key="pos_if1"
         )
         if2 = st.selectbox(
-            "內野手 2", options=["-- 請選擇 --"] + infielders, key="pos_if2"
+            "內野手 2", options=if_options, index=idx_if2, key="pos_if2"
         )
         if3 = st.selectbox(
-            "內野手 3", options=["-- 請選擇 --"] + infielders, key="pos_if3"
+            "內野手 3", options=if_options, index=idx_if3, key="pos_if3"
         )
         if4 = st.selectbox(
-            "內野手 4", options=["-- 請選擇 --"] + infielders, key="pos_if4"
+            "內野手 4", options=if_options, index=idx_if4, key="pos_if4"
         )
         of1 = st.selectbox(
-            "外野手 1", options=["-- 請選擇 --"] + outfielders, key="pos_of1"
+            "外野手 1", options=of_options, index=idx_of1, key="pos_of1"
         )
         of2 = st.selectbox(
-            "外野手 2", options=["-- 請選擇 --"] + outfielders, key="pos_of2"
+            "外野手 2", options=of_options, index=idx_of2, key="pos_of2"
         )
         of3 = st.selectbox(
-            "外野手 3", options=["-- 請選擇 --"] + outfielders, key="pos_of3"
+            "外野手 3", options=of_options, index=idx_of3, key="pos_of3"
         )
         dh_select = st.selectbox(
-            "指定打擊 (DH)",
-            options=["-- 請選擇 --"] + all_batters,
-            key="pos_dh",
+            "指定打擊 (DH)", options=dh_options, index=idx_dh, key="pos_dh"
         )
 
         submit = st.form_submit_button("儲存今日陣容")
@@ -201,8 +243,6 @@ else:
     st.divider()
     st.subheader(f"👀 {game_date} 所有玩家已提交陣容")
 
-    df_cloud_lineups = read_sheet("lineups")
-
     if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
       df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
       df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
@@ -230,7 +270,7 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜 (美化修正名次顯示)
+  # TAB 2: 排行榜
   with tab2:
     st.subheader("📅 單日玩家得分榜")
     df_cloud_scores = read_sheet("daily_scores")
@@ -239,11 +279,10 @@ else:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
 
-      # 依照日期與分數排序，並重置索引建立名次欄位
       df_s = df_s.sort_values(
           by=["date", "score"], ascending=[False, False]
       ).reset_index(drop=True)
-      df_s.index = df_s.index + 1  # 名次從 1 開始
+      df_s.index = df_s.index + 1
 
       rename_daily = {"username": "玩家", "date": "比賽日期", "score": "當日得分"}
       df_s_display = df_s.rename(columns=rename_daily)
@@ -259,7 +298,7 @@ else:
           .sort_values(by="score", ascending=False)
           .reset_index(drop=True)
       )
-      df_total.index = df_total.index + 1  # 名次從 1 開始
+      df_total.index = df_total.index + 1
       df_total.columns = ["玩家", "累計總積分"]
 
       st.dataframe(df_total, use_container_width=True)
