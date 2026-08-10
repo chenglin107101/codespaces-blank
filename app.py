@@ -75,8 +75,10 @@ def calculate_player_score(row):
   bb = int(row.get("BB", 0))
   sb = int(row.get("SB", 0))
   so = int(row.get("SO", 0))
+  r = int(row.get("R", 0))
+  gdp = int(row.get("GDP", 0))
 
-  # 基本打擊項目得分
+  # 1. 基本打擊項目得分
   score = (
       (b1 * 3)
       + (b2 * 6)
@@ -84,30 +86,39 @@ def calculate_player_score(row):
       + (hr * 15)
       + (bb * 2)
       + (rbi * 2)
+      + (r * 2)
       + (sb * 3)
       - (so * 3)
+      - (gdp * 5)
   )
+
   total_hits = b1 + b2 + b3 + hr
 
-  # 1. 完全打擊加碼 (+30)
+  # 2. 完全打擊加碼 (+50)
   if b1 >= 1 and b2 >= 1 and b3 >= 1 and hr >= 1:
-    score += 30
+    score += 50
 
-  # 2. 多安打里程碑加碼 (階梯式不重複採計)
+  # 3. 多安打里程碑加碼 (階梯式不重複採計)
   if total_hits >= 6:
-    score += 20
+    score += 30
   elif total_hits == 5:
-    score += 12
+    score += 20
   elif total_hits == 4:
-    score += 7
+    score += 12
   elif total_hits == 3:
+    score += 7
+  elif total_hits == 2:
     score += 4
 
-  # 3. 多全壘打里程碑加碼 (不重複採計)
+  # 4. 多全壘打里程碑加碼 (階梯式不重複採計)
   if hr >= 3:
-    score += 18
+    score += 40
   elif hr == 2:
-    score += 9
+    score += 24
+
+  # 5. 多盜壘加碼 (雙盜壘以上 +8)
+  if sb >= 2:
+    score += 8
 
   return score
 
@@ -170,10 +181,8 @@ else:
     if df_players.empty:
       st.error("⚠️ 找不到 players.csv 或內容格式不正確，請檢查檔案！")
     else:
-      # 讀取雲端試算表歷史陣容
       df_cloud_lineups = read_sheet("lineups")
 
-      # 預設上次歷史紀錄
       has_history = False
       last_lineup = {}
       if not df_cloud_lineups.empty and "username" in df_cloud_lineups.columns:
@@ -195,7 +204,6 @@ else:
       of_options = ["-- 請選擇 --"] + outfielders
       dh_options = ["-- 請選擇 --"] + all_batters
 
-      # 取得預設選擇的 index
       idx_c = (
           get_index(c_options, last_lineup.get("catcher", ""))
           if has_history
@@ -360,15 +368,76 @@ else:
     else:
       st.info("尚無單日結算紀錄。")
 
-  # TAB 3: 計分規則 (已同步更新雙響砲與三響砲說明)
+  # TAB 3: 計分規則 (已完全改為直向表格呈現)
   with tab3:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
-    st.markdown("""
-        * **一壘安打 ($1B$)**：`+3 分` | **二壘安打 ($2B$)**：`+6 分` | **三壘安打 ($3B$)**：`+10 分` | **全壘打 ($HR$)**：`+15 分`
-        * **四死球 ($BB$)**：`+2 分` | **打點 ($RBI$)**：`+2 分` | **盜壘 ($SB$)**：`+3 分` | **三振 ($SO$)**：`-3 分`
-        * **猛打賞 (3H)**：`+4` | **鐵支 (4H)**：`+7` | **5H**：`+12` | **6H**：`+20` | **完全打擊**：`+30`
-        * **雙響砲 (2HR)**：`+9` | **三響砲 (3HR)**：`+18` *(全壘打加碼不重複採計)*
-        """)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+      st.subheader("⚾ 基本打擊得分")
+      df_basic = pd.DataFrame({
+          "打擊項目": [
+              "一壘安打",
+              "二壘安打",
+              "三壘安打",
+              "全壘打",
+              "四死球",
+              "打點",
+              "得分",
+              "盜壘",
+          ],
+          "代號": ["1B", "2B", "3B", "HR", "BB", "RBI", "R", "SB"],
+          "得分計算法": [
+              "+3 分",
+              "+6 分",
+              "+10 分",
+              "+15 分",
+              "+2 分",
+              "+2 分",
+              "+2 分",
+              "+3 分",
+          ],
+      })
+      st.dataframe(df_basic, use_container_width=True, hide_index=True)
+
+      st.subheader("⚠️ 負分扣分項目")
+      df_deduct = pd.DataFrame({
+          "扣分項目": ["三振", "雙殺打"],
+          "代號": ["SO", "GDP"],
+          "扣分計算法": ["-3 分", "-5 分"],
+      })
+      st.dataframe(df_deduct, use_container_width=True, hide_index=True)
+
+    with col2:
+      st.subheader("🌟 特殊里程碑與成就加碼")
+      df_bonus = pd.DataFrame({
+          "成就類別": [
+              "單場雙安",
+              "猛打賞 (3H)",
+              "鐵支 (4H)",
+              "單場 5 安打",
+              "單場 6 安打",
+              "雙響砲 (2HR)",
+              "三響砲 (3HR)",
+              "單場雙盜壘 (2SB+)",
+              "完全打擊",
+          ],
+          "額外加碼得分": [
+              "+4 分",
+              "+7 分",
+              "+12 分",
+              "+20 分",
+              "+30 分",
+              "+24 分",
+              "+40 分",
+              "+8 分",
+              "+50 分",
+          ],
+      })
+      st.dataframe(df_bonus, use_container_width=True, hide_index=True)
+
+    st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
   # TAB 4: 管理者結算
   with tab4:
@@ -381,10 +450,10 @@ else:
           "選擇要結算的比賽日期", value=now_tw.date(), key="admin_date"
       ).strftime("%Y-%m-%d")
 
-      default_csv_example = """name,1B,2B,3B,HR,RBI,BB,SB,SO
-陳傑憲,2,1,0,0,1,1,1,0
-張育成,0,0,0,1,2,0,0,1
-吉力吉撈·鞏冠,1,1,1,1,4,0,0,0"""
+      default_csv_example = """name,1B,2B,3B,HR,RBI,BB,SB,SO,R,GDP
+陳傑憲,2,1,0,0,1,1,1,0,2,0
+張育成,0,0,0,1,2,0,0,1,1,0
+吉力吉撈·鞏冠,1,1,1,1,4,0,0,0,2,0"""
 
       raw_data = st.text_area(
           "貼上數據區域", value=default_csv_example, height=200
