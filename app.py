@@ -76,6 +76,7 @@ def calculate_player_score(row):
   sb = int(row.get("SB", 0))
   so = int(row.get("SO", 0))
 
+  # 基本打擊項目得分
   score = (
       (b1 * 3)
       + (b2 * 6)
@@ -88,8 +89,11 @@ def calculate_player_score(row):
   )
   total_hits = b1 + b2 + b3 + hr
 
+  # 1. 完全打擊加碼 (+30)
   if b1 >= 1 and b2 >= 1 and b3 >= 1 and hr >= 1:
     score += 30
+
+  # 2. 多安打里程碑加碼 (階梯式不重複採計)
   if total_hits >= 6:
     score += 20
   elif total_hits == 5:
@@ -98,6 +102,12 @@ def calculate_player_score(row):
     score += 7
   elif total_hits == 3:
     score += 4
+
+  # 3. 多全壘打里程碑加碼 (不重複採計)
+  if hr >= 3:
+    score += 18
+  elif hr == 2:
+    score += 9
 
   return score
 
@@ -285,7 +295,6 @@ else:
       df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
       df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
 
-      # 自動去重：同一位玩家同一天若有多筆，只留最後一筆（最新）
       if not df_display.empty and "username" in df_display.columns:
         df_display = df_display.drop_duplicates(
             subset=["username", "date"], keep="last"
@@ -323,7 +332,6 @@ else:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
 
-      # 得分榜去重：同一天同一玩家只留最新一筆成績
       df_s = (
           df_s.drop_duplicates(subset=["username", "date"], keep="last")
           .sort_values(by=["date", "score"], ascending=[False, False])
@@ -352,13 +360,14 @@ else:
     else:
       st.info("尚無單日結算紀錄。")
 
-  # TAB 3: 計分規則
+  # TAB 3: 計分規則 (已同步更新雙響砲與三響砲說明)
   with tab3:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
     st.markdown("""
         * **一壘安打 ($1B$)**：`+3 分` | **二壘安打 ($2B$)**：`+6 分` | **三壘安打 ($3B$)**：`+10 分` | **全壘打 ($HR$)**：`+15 分`
         * **四死球 ($BB$)**：`+2 分` | **打點 ($RBI$)**：`+2 分` | **盜壘 ($SB$)**：`+3 分` | **三振 ($SO$)**：`-3 分`
-        * **猛打賞(3H)**：`+4` | **鐵支(4H)**：`+7` | **5H**：`+12` | **6H**：`+20` | **完全打擊**：`+30`
+        * **猛打賞 (3H)**：`+4` | **鐵支 (4H)**：`+7` | **5H**：`+12` | **6H**：`+20` | **完全打擊**：`+30`
+        * **雙響砲 (2HR)**：`+9` | **三響砲 (3HR)**：`+18` *(全壘打加碼不重複採計)*
         """)
 
   # TAB 4: 管理者結算
@@ -399,7 +408,6 @@ else:
             df_target = df_cloud_lineups[
                 df_cloud_lineups["date"] == target_date
             ]
-            # 結算核心關鍵：去除重複玩家，只計算最後一次送出的最新陣容！
             df_target = df_target.drop_duplicates(
                 subset=["username", "date"], keep="last"
             )
