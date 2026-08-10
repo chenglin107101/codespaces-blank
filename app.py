@@ -331,14 +331,52 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜 (新增：🔥 大會紀錄)
+  # TAB 2: 排行榜 (依照最新指示順序調整)
   with tab2:
+    df_cloud_scores = read_sheet("daily_scores")
+
+    # 1. 第一個：單日玩家得分榜
+    st.subheader("📅 單日玩家得分榜")
+    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
+      df_s = df_cloud_scores.copy()
+      df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
+
+      df_s = (
+          df_s.drop_duplicates(subset=["username", "date"], keep="last")
+          .sort_values(by=["date", "score"], ascending=[False, False])
+          .reset_index(drop=True)
+      )
+      df_s.index = df_s.index + 1
+
+      rename_daily = {"username": "玩家", "date": "比賽日期", "score": "當日得分"}
+      df_s_display = df_s.rename(columns=rename_daily)
+
+      st.dataframe(df_s_display, use_container_width=True)
+
+      # 2. 中間：賽季玩家累計總積分榜
+      st.divider()
+      st.subheader("🏆 賽季玩家累計總積分榜")
+      df_total = (
+          df_s.groupby("username")["score"]
+          .sum()
+          .reset_index()
+          .sort_values(by="score", ascending=False)
+          .reset_index(drop=True)
+      )
+      df_total.index = df_total.index + 1
+      df_total.columns = ["玩家", "累計總積分"]
+
+      st.dataframe(df_total, use_container_width=True)
+    else:
+      st.info("尚無單日結算紀錄。")
+
+    # 3. 最底下：🔥 夢幻聯賽大會紀錄 (Hall of Fame)
+    st.divider()
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
     rec_col1, rec_col2 = st.columns(2)
 
-    # 1. 玩家單日最高分計算
-    df_cloud_scores = read_sheet("daily_scores")
+    # 玩家單日最高分紀錄
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s_rec = df_cloud_scores.copy()
       df_s_rec["score"] = pd.to_numeric(df_s_rec["score"], errors="coerce")
@@ -358,7 +396,7 @@ else:
           label="👑 玩家單日史上最高分", value="-- 分", delta="尚無紀錄"
       )
 
-    # 2. 單一球員單場最高得分計算
+    # 單一球員單場最高得分紀錄
     df_player_stats = read_sheet("player_stats")
     if not df_player_stats.empty and "score" in df_player_stats.columns:
       df_p_rec = df_player_stats.copy()
@@ -378,41 +416,6 @@ else:
       rec_col2.metric(
           label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
       )
-
-    st.divider()
-
-    st.subheader("📅 單日玩家得分榜")
-    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
-      df_s = df_cloud_scores.copy()
-      df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
-
-      df_s = (
-          df_s.drop_duplicates(subset=["username", "date"], keep="last")
-          .sort_values(by=["date", "score"], ascending=[False, False])
-          .reset_index(drop=True)
-      )
-      df_s.index = df_s.index + 1
-
-      rename_daily = {"username": "玩家", "date": "比賽日期", "score": "當日得分"}
-      df_s_display = df_s.rename(columns=rename_daily)
-
-      st.dataframe(df_s_display, use_container_width=True)
-
-      st.divider()
-      st.subheader("🏆 賽季玩家累計總積分榜")
-      df_total = (
-          df_s.groupby("username")["score"]
-          .sum()
-          .reset_index()
-          .sort_values(by="score", ascending=False)
-          .reset_index(drop=True)
-      )
-      df_total.index = df_total.index + 1
-      df_total.columns = ["玩家", "累計總積分"]
-
-      st.dataframe(df_total, use_container_width=True)
-    else:
-      st.info("尚無單日結算紀錄。")
 
   # TAB 3: 計分規則
   with tab3:
@@ -485,7 +488,7 @@ else:
 
     st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
-  # TAB 4: 管理者結算 (新增同步寫入球員單日得分至 player_stats)
+  # TAB 4: 管理者結算
   with tab4:
     st.header("⚙️ 每日比賽數據匯入與分數結算")
 
