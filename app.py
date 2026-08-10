@@ -331,11 +331,57 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜
+  # TAB 2: 排行榜 (新增：🔥 大會紀錄)
   with tab2:
-    st.subheader("📅 單日玩家得分榜")
-    df_cloud_scores = read_sheet("daily_scores")
+    st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
+    rec_col1, rec_col2 = st.columns(2)
+
+    # 1. 玩家單日最高分計算
+    df_cloud_scores = read_sheet("daily_scores")
+    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
+      df_s_rec = df_cloud_scores.copy()
+      df_s_rec["score"] = pd.to_numeric(df_s_rec["score"], errors="coerce")
+      max_user_row = df_s_rec.sort_values(by="score", ascending=False).iloc[0]
+
+      u_top_score = int(max_user_row["score"])
+      u_top_name = max_user_row["username"]
+      u_top_date = max_user_row["date"]
+
+      rec_col1.metric(
+          label="👑 玩家單日史上最高分",
+          value=f"{u_top_score} 分",
+          delta=f"{u_top_name} ({u_top_date})",
+      )
+    else:
+      rec_col1.metric(
+          label="👑 玩家單日史上最高分", value="-- 分", delta="尚無紀錄"
+      )
+
+    # 2. 單一球員單場最高得分計算
+    df_player_stats = read_sheet("player_stats")
+    if not df_player_stats.empty and "score" in df_player_stats.columns:
+      df_p_rec = df_player_stats.copy()
+      df_p_rec["score"] = pd.to_numeric(df_p_rec["score"], errors="coerce")
+      max_p_row = df_p_rec.sort_values(by="score", ascending=False).iloc[0]
+
+      p_top_score = int(max_p_row["score"])
+      p_top_name = max_p_row["name"]
+      p_top_date = max_p_row["date"]
+
+      rec_col2.metric(
+          label="⚾ 單一球員單場最高得分",
+          value=f"{p_top_score} 分",
+          delta=f"{p_top_name} ({p_top_date})",
+      )
+    else:
+      rec_col2.metric(
+          label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
+      )
+
+    st.divider()
+
+    st.subheader("📅 單日玩家得分榜")
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
@@ -368,7 +414,7 @@ else:
     else:
       st.info("尚無單日結算紀錄。")
 
-  # TAB 3: 計分規則 (已完全改為直向表格呈現)
+  # TAB 3: 計分規則
   with tab3:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
@@ -439,7 +485,7 @@ else:
 
     st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
-  # TAB 4: 管理者結算
+  # TAB 4: 管理者結算 (新增同步寫入球員單日得分至 player_stats)
   with tab4:
     st.header("⚙️ 每日比賽數據匯入與分數結算")
 
@@ -471,6 +517,15 @@ else:
               zip(df_stats["name"], df_stats["calculated_score"])
           )
 
+          # 1. 同步將每位球員當日成績上傳至 player_stats 工作表
+          for _, p_row in df_stats.iterrows():
+            write_to_sheet("player_stats", [
+                p_row["name"],
+                target_date,
+                int(p_row["calculated_score"]),
+            ])
+
+          # 2. 結算玩家團隊總得分並寫入 daily_scores
           df_cloud_lineups = read_sheet("lineups")
           if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
             df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
@@ -509,7 +564,7 @@ else:
                 success_count += 1
 
             st.success(
-                f"🎉 {target_date} 數據結算完成！成功將 {success_count} 位玩家的分數寫入雲端排行榜。"
+                f"🎉 {target_date} 數據結算完成！成功更新 {success_count} 位玩家與全體球員之雲端紀錄。"
             )
             st.rerun()
 
