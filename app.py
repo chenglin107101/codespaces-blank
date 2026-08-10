@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import urllib.parse
 import urllib.request
@@ -109,6 +109,17 @@ def get_index(options, target_val):
   return 0
 
 
+# 計算比賽日期預設值（每日 18:35 後自動切換為明天）
+tw_tz = pytz.timezone("Asia/Taipei")
+now_tw = datetime.now(tw_tz)
+cutoff_time = now_tw.replace(hour=18, minute=35, second=0, microsecond=0)
+
+if now_tw >= cutoff_time:
+  default_game_date = (now_tw + timedelta(days=1)).date()
+else:
+  default_game_date = now_tw.date()
+
+
 # 主頁面
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
@@ -134,9 +145,13 @@ else:
 
   # TAB 1: 安排陣容
   with tab1:
-    game_date = st.date_input("選擇比賽日期", key="lineup_date").strftime(
-        "%Y-%m-%d"
-    )
+    game_date = st.date_input(
+        "選擇比賽日期", value=default_game_date, key="lineup_date"
+    ).strftime("%Y-%m-%d")
+
+    if now_tw >= cutoff_time:
+      st.info("⏰ 當日前日場次開打時間（18:35）已過，預設切換為【明天】的比賽陣容。")
+
     st.subheader(
         f"【{st.session_state.user}】請安排 {game_date} 的守備陣容 (1捕 + 4內 +"
         " 3外 + 1DH)"
@@ -254,8 +269,7 @@ else:
           elif len(selected_all) != len(set(selected_all)):
             st.error("⚠️ 陣容中有重複選擇的球員，請重新檢查！")
           else:
-            tw_tz = pytz.timezone("Asia/Taipei")
-            now_str = datetime.now(tw_tz).strftime("%Y-%m-%d %H:%M:%S")
+            now_str = now_tw.strftime("%Y-%m-%d %H:%M:%S")
 
             row_data = [st.session_state.user, game_date, *selected_all, now_str]
             if write_to_sheet("lineups", row_data):
@@ -270,6 +284,12 @@ else:
     if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
       df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
       df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
+
+      # 自動去重：同一位玩家同一天若有多筆，只留最後一筆（最新）
+      if not df_display.empty and "username" in df_display.columns:
+        df_display = df_display.drop_duplicates(
+            subset=["username", "date"], keep="last"
+        )
 
       rename_dict = {
           "username": "玩家",
@@ -303,9 +323,12 @@ else:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
 
-      df_s = df_s.sort_values(
-          by=["date", "score"], ascending=[False, False]
-      ).reset_index(drop=True)
+      # 得分榜去重：同一天同一玩家只留最新一筆成績
+      df_s = (
+          df_s.drop_duplicates(subset=["username", "date"], keep="last")
+          .sort_values(by=["date", "score"], ascending=[False, False])
+          .reset_index(drop=True)
+      )
       df_s.index = df_s.index + 1
 
       rename_daily = {"username": "玩家", "date": "比賽日期", "score": "當日得分"}
@@ -345,9 +368,9 @@ else:
     if st.session_state.user != ADMIN_USER:
       st.error(f"🔒 權限不足：只有管理者【{ADMIN_USER}】可進行結算！")
     else:
-      target_date = st.date_input("選擇要結算的比賽日期", key="admin_date").strftime(
-          "%Y-%m-%d"
-      )
+      target_date = st.date_input(
+          "選擇要結算的比賽日期", value=now_tw.date(), key="admin_date"
+      ).strftime("%Y-%m-%d")
 
       default_csv_example = """name,1B,2B,3B,HR,RBI,BB,SB,SO
 陳傑憲,2,1,0,0,1,1,1,0
@@ -373,7 +396,13 @@ else:
           df_cloud_lineups = read_sheet("lineups")
           if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
             df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
-            df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
+            df_target = df_cloud_lineups[
+                df_cloud_lineups["date"] == target_date
+            ]
+            # 結算核心關鍵：去除重複玩家，只計算最後一次送出的最新陣容！
+            df_target = df_target.drop_duplicates(
+                subset=["username", "date"], keep="last"
+            )
           else:
             df_target = pd.DataFrame()
 
