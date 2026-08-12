@@ -53,7 +53,7 @@ def write_to_sheet(sheet_name, row_data):
     return False
 
 
-# 側邊欄：身分驗證 (包含 0705 密碼驗證)
+# 側邊欄：身分驗證
 st.sidebar.title("👤 玩家身分驗證")
 user_input = st.sidebar.text_input("請輸入您的姓名 / 暱稱", value="")
 
@@ -82,7 +82,7 @@ else:
 st.session_state.is_admin = is_admin_verified
 
 
-# 取得指定日期的截止時間 (優先讀取雲端設定，預設 18:35)
+# 取得指定日期的截止時間
 def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
   if not df_settings.empty and "date" in df_settings.columns:
@@ -107,7 +107,6 @@ cutoff_time_today = now_tw.replace(
     hour=today_h, minute=today_m, second=0, microsecond=0
 )
 
-# 若今天已過截止時間，預設選擇日期切換為明天
 if now_tw >= cutoff_time_today:
   default_game_date = (now_tw + timedelta(days=1)).date()
 else:
@@ -202,7 +201,6 @@ else:
         "選擇比賽日期", value=default_game_date, key="lineup_date"
     ).strftime("%Y-%m-%d")
 
-    # 取得當前選擇比賽日期的截止時間
     c_h, c_m = get_cutoff_time_for_date(game_date)
     game_cutoff_dt = now_tw.replace(
         year=int(game_date.split("-")[0]),
@@ -353,7 +351,6 @@ else:
             subset=["username", "date"], keep="last"
         )
 
-      # 賽前保密功能：尚未過截止時間則隱藏球員名單
       is_locked = now_tw < game_cutoff_dt
 
       rename_dict = {
@@ -398,11 +395,15 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜
+  # TAB 2: 排行榜 (新增：當日球員 MVP & 戰犯表現榜)
   with tab2:
     df_cloud_scores = read_sheet("daily_scores")
+    df_player_stats = read_sheet("player_stats")
 
+    # 1. 最上方：單日玩家得分榜 (切換選單)
     st.subheader("📅 單日玩家得分榜")
+    selected_score_date = None
+
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
@@ -435,7 +436,55 @@ else:
         st.dataframe(df_s_display, use_container_width=True)
       else:
         st.info("尚無單日結算紀錄。")
+    else:
+      st.info("尚無單日結算紀錄。")
 
+    # 2. 中間第一區：🔥 選定日期之【球員表現榜】(Top 3 & Bottom 3)
+    if (
+        selected_score_date
+        and not df_player_stats.empty
+        and "score" in df_player_stats.columns
+    ):
+      st.divider()
+      st.subheader(f"⚡ {selected_score_date} 球員表現榜")
+
+      df_ps = df_player_stats.copy()
+      df_ps["score"] = pd.to_numeric(df_ps["score"], errors="coerce")
+      df_ps["date"] = df_ps["date"].astype(str)
+
+      df_ps_day = df_ps[df_ps["date"] == selected_score_date].sort_values(
+          by="score", ascending=False
+      )
+
+      if not df_ps_day.empty:
+        p_col1, p_col2 = st.columns(2)
+
+        # 最高分 Top 3 球員
+        with p_col1:
+          st.markdown("##### 🚀 當日最高得分球員 (Top 3)")
+          top_3 = df_ps_day.head(3).reset_index(drop=True)
+          top_3.index = top_3.index + 1
+          top_3_display = top_3.rename(
+              columns={"name": "球員姓名", "score": "貢獻分數"}
+          )[["球員姓名", "貢獻分數"]]
+          st.dataframe(top_3_display, use_container_width=True)
+
+        # 最低分 Bottom 3 球員 (包含負分)
+        with p_col2:
+          st.markdown("##### 🧊 當日最低得分球員 (Bottom 3)")
+          bot_3 = (
+              df_ps_day.tail(3)
+              .sort_values(by="score", ascending=True)
+              .reset_index(drop=True)
+          )
+          bot_3.index = bot_3.index + 1
+          bot_3_display = bot_3.rename(
+              columns={"name": "球員姓名", "score": "貢獻分數"}
+          )[["球員姓名", "貢獻分數"]]
+          st.dataframe(bot_3_display, use_container_width=True)
+
+    # 3. 中間第二區：賽季玩家累計總積分榜
+    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       st.divider()
       st.subheader("🏆 賽季玩家累計總積分榜")
       df_total_base = df_s.drop_duplicates(
@@ -452,9 +501,8 @@ else:
       df_total.columns = ["玩家", "累計總積分"]
 
       st.dataframe(df_total, use_container_width=True)
-    else:
-      st.info("尚無單日結算紀錄。")
 
+    # 4. 最底下：🔥 夢幻聯賽大會紀錄 (Hall of Fame)
     st.divider()
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
@@ -479,7 +527,6 @@ else:
           label="👑 玩家單日史上最高分", value="-- 分", delta="尚無紀錄"
       )
 
-    df_player_stats = read_sheet("player_stats")
     if not df_player_stats.empty and "score" in df_player_stats.columns:
       df_p_rec = df_player_stats.copy()
       df_p_rec["score"] = pd.to_numeric(df_p_rec["score"], errors="coerce")
@@ -570,7 +617,7 @@ else:
 
     st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
-  # TAB 4: 管理者專區 (包含截止時間微調 + 數據匯入)
+  # TAB 4: 管理者專區
   with tab4:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -579,15 +626,18 @@ else:
           f"🔒 權限不足：請於左側邊欄輸入正確的管理員驗證碼（密碼）以解鎖！"
       )
     else:
-      # 管理者功能 1: 調整截止時間
       st.subheader("⏰ 調整指定日期比賽截止時間 (如假日提前開打)")
-      set_date = st.date_input("選擇調整日期", value=now_tw.date(), key="cfg_date").strftime("%Y-%m-%d")
-      
-      # 讀取現有時間做預設
+      set_date = st.date_input(
+          "選擇調整日期", value=now_tw.date(), key="cfg_date"
+      ).strftime("%Y-%m-%d")
+
       curr_h, curr_m = get_cutoff_time_for_date(set_date)
       from datetime import time
-      set_time = st.time_input("設定比賽截止時間", value=time(curr_h, curr_m), key="cfg_time")
-      
+
+      set_time = st.time_input(
+          "設定比賽截止時間", value=time(curr_h, curr_m), key="cfg_time"
+      )
+
       if st.button("💾 儲存截止時間設定"):
         time_str = set_time.strftime("%H:%M")
         if write_to_sheet("settings", [set_date, time_str]):
@@ -598,7 +648,6 @@ else:
 
       st.divider()
 
-      # 管理者功能 2: 每日比賽數據匯入與分數結算
       st.subheader("📊 每日比賽數據匯入與分數結算")
       target_date = st.date_input(
           "選擇要結算的比賽日期", value=now_tw.date(), key="admin_date"
