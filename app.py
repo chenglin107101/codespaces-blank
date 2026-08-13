@@ -176,9 +176,13 @@ def get_index(options, target_val):
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
 else:
-  tab1, tab2, tab3, tab4 = st.tabs(
-      ["📋 安排今日陣容", "🏆 玩家積分排行榜", "📜 計分規則說明", "⚙️ 管理者數據匯入"]
-  )
+  tab1, tab2, tab3, tab4, tab5 = st.tabs([
+      "📋 安排今日陣容",
+      "🏆 玩家積分排行榜",
+      "⚾ 當日球員表現榜",
+      "📜 計分規則說明",
+      "⚙️ 管理者數據匯入",
+  ])
 
   # 載入球員名單
   try:
@@ -395,15 +399,12 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 排行榜 (新增：當日球員 MVP & 戰犯表現榜)
+  # TAB 2: 玩家積分排行榜 (單日 -> 單週 -> 累計總積分 -> 大會紀錄)
   with tab2:
     df_cloud_scores = read_sheet("daily_scores")
-    df_player_stats = read_sheet("player_stats")
 
-    # 1. 最上方：單日玩家得分榜 (切換選單)
+    # 1. 單日玩家得分榜
     st.subheader("📅 單日玩家得分榜")
-    selected_score_date = None
-
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
@@ -434,75 +435,69 @@ else:
         df_s_display = df_day_s.rename(columns=rename_daily)
 
         st.dataframe(df_s_display, use_container_width=True)
+
+        # 2. 單週玩家得分榜
+        st.divider()
+        st.subheader("🗓️ 單週玩家積分榜")
+
+        # 計算每個日期對應的「週一至週日」週別區間標籤
+        def get_week_label(d_str):
+          dt = datetime.strptime(d_str, "%Y-%m-%d")
+          start_of_week = dt - timedelta(days=dt.weekday())
+          end_of_week = start_of_week + timedelta(days=6)
+          return (
+              f"{start_of_week.strftime('%Y-%m-%d')} ~"
+              f" {end_of_week.strftime('%Y-%m-%d')}"
+          )
+
+        df_s_clean = df_s.drop_duplicates(
+            subset=["username", "date"], keep="last"
+        ).copy()
+        df_s_clean["week_range"] = df_s_clean["date"].apply(get_week_label)
+
+        available_weeks = sorted(
+            df_s_clean["week_range"].unique().tolist(), reverse=True
+        )
+        if available_weeks:
+          selected_week = st.selectbox(
+              "選擇要查看的週別區間 (週一 至 週日)",
+              options=available_weeks,
+              key="select_week_range",
+          )
+
+          df_week_s = df_s_clean[df_s_clean["week_range"] == selected_week]
+          df_week_sum = (
+              df_week_s.groupby("username")["score"]
+              .sum()
+              .reset_index()
+              .sort_values(by="score", ascending=False)
+              .reset_index(drop=True)
+          )
+          df_week_sum.index = df_week_sum.index + 1
+          df_week_sum.columns = ["玩家", "當週總積分"]
+
+          st.dataframe(df_week_sum, use_container_width=True)
+
+        # 3. 賽季玩家累計總積分榜
+        st.divider()
+        st.subheader("🏆 賽季玩家累計總積分榜")
+        df_total = (
+            df_s_clean.groupby("username")["score"]
+            .sum()
+            .reset_index()
+            .sort_values(by="score", ascending=False)
+            .reset_index(drop=True)
+        )
+        df_total.index = df_total.index + 1
+        df_total.columns = ["玩家", "累計總積分"]
+
+        st.dataframe(df_total, use_container_width=True)
       else:
         st.info("尚無單日結算紀錄。")
     else:
       st.info("尚無單日結算紀錄。")
 
-    # 2. 中間第一區：🔥 選定日期之【球員表現榜】(Top 3 & Bottom 3)
-    if (
-        selected_score_date
-        and not df_player_stats.empty
-        and "score" in df_player_stats.columns
-    ):
-      st.divider()
-      st.subheader(f"⚡ {selected_score_date} 球員表現榜")
-
-      df_ps = df_player_stats.copy()
-      df_ps["score"] = pd.to_numeric(df_ps["score"], errors="coerce")
-      df_ps["date"] = df_ps["date"].astype(str)
-
-      df_ps_day = df_ps[df_ps["date"] == selected_score_date].sort_values(
-          by="score", ascending=False
-      )
-
-      if not df_ps_day.empty:
-        p_col1, p_col2 = st.columns(2)
-
-        # 最高分 Top 3 球員
-        with p_col1:
-          st.markdown("##### 🚀 當日最高得分球員 (Top 3)")
-          top_3 = df_ps_day.head(3).reset_index(drop=True)
-          top_3.index = top_3.index + 1
-          top_3_display = top_3.rename(
-              columns={"name": "球員姓名", "score": "貢獻分數"}
-          )[["球員姓名", "貢獻分數"]]
-          st.dataframe(top_3_display, use_container_width=True)
-
-        # 最低分 Bottom 3 球員 (包含負分)
-        with p_col2:
-          st.markdown("##### 🧊 當日最低得分球員 (Bottom 3)")
-          bot_3 = (
-              df_ps_day.tail(3)
-              .sort_values(by="score", ascending=True)
-              .reset_index(drop=True)
-          )
-          bot_3.index = bot_3.index + 1
-          bot_3_display = bot_3.rename(
-              columns={"name": "球員姓名", "score": "貢獻分數"}
-          )[["球員姓名", "貢獻分數"]]
-          st.dataframe(bot_3_display, use_container_width=True)
-
-    # 3. 中間第二區：賽季玩家累計總積分榜
-    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
-      st.divider()
-      st.subheader("🏆 賽季玩家累計總積分榜")
-      df_total_base = df_s.drop_duplicates(
-          subset=["username", "date"], keep="last"
-      )
-      df_total = (
-          df_total_base.groupby("username")["score"]
-          .sum()
-          .reset_index()
-          .sort_values(by="score", ascending=False)
-          .reset_index(drop=True)
-      )
-      df_total.index = df_total.index + 1
-      df_total.columns = ["玩家", "累計總積分"]
-
-      st.dataframe(df_total, use_container_width=True)
-
-    # 4. 最底下：🔥 夢幻聯賽大會紀錄 (Hall of Fame)
+    # 4. 🔥 夢幻聯賽大會紀錄 (Hall of Fame)
     st.divider()
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
@@ -527,6 +522,7 @@ else:
           label="👑 玩家單日史上最高分", value="-- 分", delta="尚無紀錄"
       )
 
+    df_player_stats = read_sheet("player_stats")
     if not df_player_stats.empty and "score" in df_player_stats.columns:
       df_p_rec = df_player_stats.copy()
       df_p_rec["score"] = pd.to_numeric(df_p_rec["score"], errors="coerce")
@@ -546,8 +542,71 @@ else:
           label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
       )
 
-  # TAB 3: 計分規則
+  # TAB 3: 當日球員表現榜 (獨立頁籤)
   with tab3:
+    st.subheader("⚾ 當日球員表現榜")
+    df_player_stats = read_sheet("player_stats")
+
+    if not df_player_stats.empty and "score" in df_player_stats.columns:
+      df_ps = df_player_stats.copy()
+      df_ps["score"] = pd.to_numeric(df_ps["score"], errors="coerce")
+      df_ps["date"] = df_ps["date"].astype(str)
+
+      p_dates = sorted(df_ps["date"].unique().tolist(), reverse=True)
+
+      if p_dates:
+        select_p_date = st.selectbox(
+            "選擇要查看球員表現的比賽日期",
+            options=p_dates,
+            key="select_p_date",
+        )
+
+        df_ps_day = df_ps[df_ps["date"] == select_p_date].sort_values(
+            by="score", ascending=False
+        )
+
+        if not df_ps_day.empty:
+          p_col1, p_col2 = st.columns(2)
+
+          with p_col1:
+            st.markdown("##### 🚀 當日最高得分球員 (Top 3)")
+            top_3 = df_ps_day.head(3).reset_index(drop=True)
+            top_3.index = top_3.index + 1
+            top_3_display = top_3.rename(
+                columns={"name": "球員姓名", "score": "貢獻分數"}
+            )[["球員姓名", "貢獻分數"]]
+            st.dataframe(top_3_display, use_container_width=True)
+
+          with p_col2:
+            st.markdown("##### 🧊 當日最低得分球員 (Bottom 3)")
+            bot_3 = (
+                df_ps_day.tail(3)
+                .sort_values(by="score", ascending=True)
+                .reset_index(drop=True)
+            )
+            bot_3.index = bot_3.index + 1
+            bot_3_display = bot_3.rename(
+                columns={"name": "球員姓名", "score": "貢獻分數"}
+            )[["球員姓名", "貢獻分數"]]
+            st.dataframe(bot_3_display, use_container_width=True)
+
+          st.divider()
+          st.markdown("##### 📊 當日全體球員得分明細表")
+          df_ps_all = df_ps_day.reset_index(drop=True)
+          df_ps_all.index = df_ps_all.index + 1
+          st.dataframe(
+              df_ps_all.rename(
+                  columns={"name": "球員姓名", "score": "當日獲得分數"}
+              )[["球員姓名", "當日獲得分數"]],
+              use_container_width=True,
+          )
+      else:
+        st.info("尚無球員單日得分紀錄。")
+    else:
+      st.info("尚無球員單日得分紀錄。")
+
+  # TAB 4: 計分規則
+  with tab4:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
     col1, col2 = st.columns(2)
@@ -617,8 +676,8 @@ else:
 
     st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
-  # TAB 4: 管理者專區
-  with tab4:
+  # TAB 5: 管理者專區
+  with tab5:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
     if not st.session_state.get("is_admin", False):
