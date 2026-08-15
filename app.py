@@ -166,6 +166,51 @@ def calculate_player_score(row):
   return score
 
 
+# 計算當日理論最高「完美陣容總分」 (1捕 + 4內 + 3外 + 1DH)
+def calculate_optimal_score(df_stats, df_players):
+  if df_stats.empty or df_players.empty:
+    return 0, []
+
+  pos_dict = dict(zip(df_players["name"], df_players["position"]))
+  df_eval = df_stats.copy()
+  df_eval["position"] = df_eval["name"].map(pos_dict).fillna("未知")
+
+  catchers = df_eval[df_eval["position"] == "捕手"].sort_values(
+      by="calculated_score", ascending=False
+  )
+  infielders = df_eval[df_eval["position"] == "內野手"].sort_values(
+      by="calculated_score", ascending=False
+  )
+  outfielders = df_eval[df_eval["position"] == "外野手"].sort_values(
+      by="calculated_score", ascending=False
+  )
+
+  selected_indices = []
+
+  # 1. 最佳 1 捕
+  top_c = catchers.head(1)
+  selected_indices.extend(top_c.index.tolist())
+
+  # 2. 最佳 4 內
+  top_if = infielders.head(4)
+  selected_indices.extend(top_if.index.tolist())
+
+  # 3. 最佳 3 外
+  top_of = outfielders.head(3)
+  selected_indices.extend(top_of.index.tolist())
+
+  # 4. 最佳 1 DH
+  remaining = df_eval.drop(index=selected_indices, errors="ignore")
+  top_dh = remaining.sort_values(
+      by="calculated_score", ascending=False
+  ).head(1)
+
+  optimal_team = pd.concat([top_c, top_if, top_of, top_dh])
+  optimal_score = optimal_team["calculated_score"].sum()
+
+  return optimal_score, optimal_team["name"].tolist()
+
+
 def get_index(options, target_val):
   if target_val in options:
     return options.index(target_val)
@@ -176,9 +221,10 @@ def get_index(options, target_val):
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
 else:
-  tab1, tab2, tab3, tab4, tab5 = st.tabs([
+  tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
       "📋 安排今日陣容",
       "🏆 玩家積分排行榜",
+      "🎯 玩家準確度排行榜",
       "⚾ 當日球員表現榜",
       "📜 計分規則說明",
       "⚙️ 管理者數據匯入",
@@ -399,11 +445,10 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 玩家積分排行榜 (單日 -> 單週 -> 累計總積分 -> 大會紀錄)
+  # TAB 2: 玩家積分排行榜
   with tab2:
     df_cloud_scores = read_sheet("daily_scores")
 
-    # 1. 單日玩家得分榜
     st.subheader("📅 單日玩家得分榜")
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
@@ -436,11 +481,9 @@ else:
 
         st.dataframe(df_s_display, use_container_width=True)
 
-        # 2. 單週玩家得分榜
         st.divider()
         st.subheader("🗓️ 單週玩家積分榜")
 
-        # 計算每個日期對應的「週一至週日」週別區間標籤
         def get_week_label(d_str):
           dt = datetime.strptime(d_str, "%Y-%m-%d")
           start_of_week = dt - timedelta(days=dt.weekday())
@@ -478,7 +521,6 @@ else:
 
           st.dataframe(df_week_sum, use_container_width=True)
 
-        # 3. 賽季玩家累計總積分榜
         st.divider()
         st.subheader("🏆 賽季玩家累計總積分榜")
         df_total = (
@@ -497,7 +539,6 @@ else:
     else:
       st.info("尚無單日結算紀錄。")
 
-    # 4. 🔥 夢幻聯賽大會紀錄 (Hall of Fame)
     st.divider()
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
@@ -542,8 +583,94 @@ else:
           label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
       )
 
-  # TAB 3: 當日球員表現榜 (獨立頁籤)
+  # TAB 3: 🎯 玩家準確度排行榜
   with tab3:
+    st.header("🎯 玩家陣容準確度排行榜 (Optimality Ratio)")
+    st.caption(
+        "💡 準確度 (達成率 %) = (玩家當日得分 / 當日理論完美最高總分) × 100%"
+    )
+
+    df_cloud_scores = read_sheet("daily_scores")
+    df_opt_scores = read_sheet("optimal_scores")
+
+    if (
+        not df_cloud_scores.empty
+        and "score" in df_cloud_scores.columns
+        and not df_opt_scores.empty
+        and "optimal_score" in df_opt_scores.columns
+    ):
+      df_s_acc = df_cloud_scores.drop_duplicates(
+          subset=["username", "date"], keep="last"
+      ).copy()
+      df_s_acc["score"] = pd.to_numeric(df_s_acc["score"], errors="coerce")
+      df_s_acc["date"] = df_s_acc["date"].astype(str)
+
+      df_opt_scores["optimal_score"] = pd.to_numeric(
+          df_opt_scores["optimal_score"], errors="coerce"
+      )
+      df_opt_scores["date"] = df_opt_scores["date"].astype(str)
+
+      df_merged = pd.merge(df_s_acc, df_opt_scores, on="date", how="inner")
+
+      def calc_ratio(row):
+        opt = row["optimal_score"]
+        act = row["score"]
+        if pd.isna(opt) or opt <= 0:
+          return 0.0
+        return round((act / opt) * 100, 1)
+
+      df_merged["accuracy"] = df_merged.apply(calc_ratio, axis=1)
+
+      st.subheader("📅 單日玩家陣容準確度榜")
+      acc_dates = sorted(df_merged["date"].unique().tolist(), reverse=True)
+      if acc_dates:
+        sel_acc_date = st.selectbox(
+            "選擇要查看準確度的比賽日期", options=acc_dates, key="sel_acc_date"
+        )
+        df_acc_day = df_merged[df_merged["date"] == sel_acc_date].sort_values(
+            by="accuracy", ascending=False
+        )
+
+        opt_val = df_acc_day["optimal_score"].iloc[0] if not df_acc_day.empty else "--"
+        st.info(f"🌟 **{sel_acc_date} 當日理論完美最高總分**：`{opt_val}` 分")
+
+        df_acc_day_display = df_acc_day.reset_index(drop=True)
+        df_acc_day_display.index = df_acc_day_display.index + 1
+        df_acc_day_display["accuracy_str"] = df_acc_day_display[
+            "accuracy"
+        ].astype(str) + "%"
+
+        st.dataframe(
+            df_acc_day_display.rename(
+                columns={
+                    "username": "玩家",
+                    "score": "當日實得分數",
+                    "accuracy_str": "陣容達成率 (準確度)",
+                }
+            )[["玩家", "當日實得分數", "陣容達成率 (準確度)"]],
+            use_container_width=True,
+        )
+
+      st.divider()
+      st.subheader("🏆 賽季玩家平均準確度總榜")
+      df_avg_acc = (
+          df_merged.groupby("username")["accuracy"]
+          .mean()
+          .reset_index()
+          .sort_values(by="accuracy", ascending=False)
+          .reset_index(drop=True)
+      )
+      df_avg_acc.index = df_avg_acc.index + 1
+      df_avg_acc["accuracy"] = df_avg_acc["accuracy"].round(1).astype(str) + "%"
+      df_avg_acc.columns = ["玩家", "賽季平均準確度 (達成率)"]
+
+      st.dataframe(df_avg_acc, use_container_width=True)
+
+    else:
+      st.info("尚無足夠的完美總分數據進行計算。")
+
+  # TAB 4: 當日球員表現榜
+  with tab4:
     st.subheader("⚾ 當日球員表現榜")
     df_player_stats = read_sheet("player_stats")
 
@@ -605,8 +732,8 @@ else:
     else:
       st.info("尚無球員單日得分紀錄。")
 
-  # TAB 4: 計分規則
-  with tab4:
+  # TAB 5: 計分規則
+  with tab5:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
     col1, col2 = st.columns(2)
@@ -676,8 +803,8 @@ else:
 
     st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
 
-  # TAB 5: 管理者專區
-  with tab5:
+  # TAB 6: 管理者專區
+  with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
     if not st.session_state.get("is_admin", False):
@@ -733,6 +860,25 @@ else:
               zip(df_stats["name"], df_stats["calculated_score"])
           )
 
+          # 檢查是否有未登錄於 players.csv 的球員 (警示但不卡死結算)
+          known_players = set(df_players["name"].tolist())
+          imported_players = set(df_stats["name"].tolist())
+          missing_players = imported_players - known_players
+
+          if missing_players:
+            st.warning(
+                f"⚠️ 發現 {len(missing_players)} 位球員未登錄於 players.csv："
+                f" 【{', '.join(missing_players)}】！已正常採計玩家得分，有空時再請至"
+                " players.csv 補上即可。"
+            )
+
+          # 1. 算當日完美總分並寫入 optimal_scores
+          opt_score, opt_players = calculate_optimal_score(
+              df_stats, df_players
+          )
+          write_to_sheet("optimal_scores", [target_date, int(opt_score)])
+
+          # 2. 上傳球員個人成績至 player_stats
           for _, p_row in df_stats.iterrows():
             write_to_sheet("player_stats", [
                 p_row["name"],
@@ -740,6 +886,7 @@ else:
                 int(p_row["calculated_score"]),
             ])
 
+          # 3. 結算玩家團隊分數並寫入 daily_scores (核心功能)
           df_cloud_lineups = read_sheet("lineups")
           if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
             df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
@@ -778,7 +925,7 @@ else:
                 success_count += 1
 
             st.success(
-                f"🎉 {target_date} 數據結算完成！成功更新 {success_count} 位玩家與全體球員之雲端紀錄。"
+                f"🎉 {target_date} 數據結算成功！共完成 {success_count} 位玩家的分數採計與排行榜更新。"
             )
             st.rerun()
 
