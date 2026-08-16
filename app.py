@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 import json
 import urllib.parse
@@ -24,14 +25,15 @@ except Exception as e:
   SCRIPT_URL = ""
 
 
-# 讀取 Google 試算表指定工作表為 DataFrame
+# 讀取 Google 試算表指定工作表為 DataFrame (加入防快取參數)
 def read_sheet(sheet_name):
   if not SHEET_ID:
     return pd.DataFrame()
-  url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+  # 加入 timestamp 避開 Google Sheet 快取
+  nocache_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}&_nocache={int(time.time())}"
   try:
-    df = pd.read_csv(url)
-    df.columns = [str(c).strip() for c in df.columns]
+    df = pd.read_csv(nocache_url)
+    df.columns = [str(c).strip().lower() for c in df.columns]
     return df
   except Exception as e:
     return pd.DataFrame()
@@ -82,19 +84,33 @@ else:
 st.session_state.is_admin = is_admin_verified
 
 
-# 精準取得指定日期的截止時間 (優先讀取 settings 工作表)
+# 超強彈性取得指定日期的截止時間
 def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
-  if not df_settings.empty and "date" in df_settings.columns:
-    df_settings["date"] = df_settings["date"].astype(str)
-    matched = df_settings[df_settings["date"] == str(date_str)]
-    if not matched.empty:
-      time_str = str(matched.iloc[-1].get("cutoff_time", "18:35")).strip()
-      try:
-        h, m = map(int, time_str.split(":"))
-        return h, m
-      except:
-        pass
+  if not df_settings.empty:
+    target_clean = str(date_str).replace("/", "-").strip()
+    
+    # 尋找 date 相關欄位
+    date_col = None
+    for col in df_settings.columns:
+      if "date" in col:
+        date_col = col
+        break
+    
+    if date_col:
+      df_settings["clean_date"] = (
+          df_settings[date_col].astype(str).str.replace("/", "-").str.strip()
+      )
+      matched = df_settings[df_settings["clean_date"] == target_clean]
+      
+      if not matched.empty:
+        # 抓最後一欄或 cutoff_time 欄位
+        time_val = str(matched.iloc[-1].iloc[1] if len(matched.columns) > 1 else "18:35").strip()
+        try:
+          h, m = map(int, time_val.split(":"))
+          return h, m
+        except:
+          pass
   return 18, 35
 
 
@@ -102,13 +118,11 @@ tw_tz = pytz.timezone("Asia/Taipei")
 now_tw = datetime.now(tw_tz)
 today_str = now_tw.strftime("%Y-%m-%d")
 
-# 計算今天正確的截止 datetime 物件
 today_h, today_m = get_cutoff_time_for_date(today_str)
 cutoff_dt_today = now_tw.replace(
     hour=today_h, minute=today_m, second=0, microsecond=0
 )
 
-# 若當前時間已經過了今天的截止時間，預設比賽日期切換為明天
 if now_tw >= cutoff_dt_today:
   default_game_date = (now_tw + timedelta(days=1)).date()
 else:
@@ -254,7 +268,6 @@ else:
         "選擇比賽日期", value=default_game_date, key="lineup_date"
     ).strftime("%Y-%m-%d")
 
-    # 針對選定的 game_date 精準抓取截止時間
     c_h, c_m = get_cutoff_time_for_date(game_date)
     g_year, g_month, g_day = map(int, game_date.split("-"))
     game_cutoff_dt = now_tw.replace(
@@ -267,7 +280,6 @@ else:
         microsecond=0,
     )
 
-    # 判斷當前是否已經過了該比賽日期的截止時間
     is_cutoff_passed = now_tw >= game_cutoff_dt
 
     st.caption(
@@ -276,7 +288,7 @@ else:
 
     if is_cutoff_passed:
       st.warning(
-          f"⏰ {game_date} 的比賽截止時間（{c_h:02d}:{c_m:02d}）已過，無法再修改或儲存今日陣容！"
+          f"⏰ {game_date} 的比賽截止時間（{c_h:02d}:{c_m:02d}）已過，無法再修改或儲存陣容！"
       )
 
     st.subheader(
@@ -374,7 +386,6 @@ else:
             "指定打擊 (DH)", options=dh_options, index=idx_dh, key="pos_dh"
         )
 
-        # 時間過了就鎖定按鈕不可點擊
         submit = st.form_submit_button(
             "儲存今日陣容", disabled=is_cutoff_passed
         )
@@ -417,7 +428,7 @@ else:
             subset=["username", "date"], keep="last"
         )
 
-      is_locked = not is_cutoff_passed  # 沒過截止時間一律保密
+      is_locked = not is_cutoff_passed
 
       rename_dict = {
           "username": "玩家",
