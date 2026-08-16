@@ -1,6 +1,6 @@
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 import json
+import time
 import urllib.parse
 import urllib.request
 import pandas as pd
@@ -16,13 +16,13 @@ ADMIN_PIN = "0705"
 
 # 補償倍率對照表 (缺席人數: 倍率)
 COMPENSATION_MULTIPLIERS = {
-    0: 1.0,      # 正常出賽 (乘 1.0)
-    1: 1.06,     # 缺席 1 人 (約 +6%)
-    2: 1.14,     # 缺席 2 人 (約 +14%)
-    3: 1.25,     # 缺席 3 人 (約 +25%)
-    4: 1.40,     # 缺席 4 人 (約 +40%)
-    5: 1.62,     # 缺席 5 人 (約 +62%)
-    6: 2.00      # 缺席 6 人 (雙倍 x2.0)
+    0: 1.0,  # 正常出賽 (乘 1.0)
+    1: 1.06,  # 缺席 1 人 (約 +6%)
+    2: 1.14,  # 缺席 2 人 (約 +14%)
+    3: 1.25,  # 缺席 3 人 (約 +25%)
+    4: 1.40,  # 缺席 4 人 (約 +40%)
+    5: 1.62,  # 缺席 5 人 (約 +62%)
+    6: 2.00,  # 缺席 6 人 (雙倍 x2.0)
 }
 
 # 取得 Google Sheet 網址與 Apps Script URL
@@ -36,14 +36,14 @@ except Exception as e:
   SCRIPT_URL = ""
 
 
-# 安全讀取 Google 試算表 (防護空值與大小寫)
+# 安全讀取 Google 試算表 (防護空值與大小寫，絕不撞名)
 def read_sheet(sheet_name):
   if not SHEET_ID:
     return pd.DataFrame()
   nocache_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}&_nocache={int(time.time())}"
   try:
     df = pd.read_csv(nocache_url)
-    if not df.empty:
+    if df is not None and not df.empty:
       df.columns = [str(c).strip().lower() for c in df.columns]
     return df
   except Exception as e:
@@ -100,21 +100,23 @@ def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
   if not df_settings.empty:
     target_clean = str(date_str).replace("/", "-").strip()
-    
+
     date_col = None
     for col in df_settings.columns:
       if "date" in col:
         date_col = col
         break
-    
+
     if date_col:
       df_settings["clean_date"] = (
           df_settings[date_col].astype(str).str.replace("/", "-").str.strip()
       )
       matched = df_settings[df_settings["clean_date"] == target_clean]
-      
+
       if not matched.empty:
-        time_val = str(matched.iloc[-1].iloc[1] if len(matched.columns) > 1 else "18:35").strip()
+        time_val = str(
+            matched.iloc[-1].iloc[1] if len(matched.columns) > 1 else "18:35"
+        ).strip()
         try:
           h, m = map(int, time_val.split(":"))
           return h, m
@@ -249,7 +251,10 @@ def get_week_label(d_str):
     dt = datetime.strptime(str(d_str), "%Y-%m-%d")
     start_of_week = dt - timedelta(days=dt.weekday())
     end_of_week = start_of_week + timedelta(days=6)
-    return f"{start_of_week.strftime('%Y-%m-%d')} ~ {end_of_week.strftime('%Y-%m-%d')}"
+    return (
+        f"{start_of_week.strftime('%Y-%m-%d')} ~"
+        f" {end_of_week.strftime('%Y-%m-%d')}"
+    )
   except:
     return "未知週別"
 
@@ -499,11 +504,17 @@ else:
     st.subheader("📅 單日玩家得分榜")
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
-      df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce").fillna(0).astype(int)
+      df_s["score"] = (
+          pd.to_numeric(df_s["score"], errors="coerce").fillna(0).astype(int)
+      )
       df_s["date"] = df_s["date"].astype(str)
 
       if "raw_score" in df_s.columns:
-        df_s["raw_score"] = pd.to_numeric(df_s["raw_score"], errors="coerce").fillna(df_s["score"]).astype(int)
+        df_s["raw_score"] = (
+            pd.to_numeric(df_s["raw_score"], errors="coerce")
+            .fillna(df_s["score"])
+            .astype(int)
+        )
       else:
         df_s["raw_score"] = df_s["score"]
 
@@ -526,7 +537,9 @@ else:
         )
         df_day_s.index = df_day_s.index + 1
 
-        df_day_s["comp_str"] = df_day_s["comp_bonus"].apply(lambda x: f"+{x}" if x > 0 else "0")
+        df_day_s["comp_str"] = df_day_s["comp_bonus"].apply(
+            lambda x: f"+{x}" if x > 0 else "0"
+        )
 
         rename_daily = {
             "username": "玩家",
@@ -535,7 +548,9 @@ else:
             "comp_str": "補償加算",
             "score": "最終總分",
         }
-        df_s_display = df_day_s.rename(columns=rename_daily)[["玩家", "比賽日期", "原始分數", "補償加算", "最終總分"]]
+        df_s_display = df_day_s.rename(columns=rename_daily)[
+            ["玩家", "比賽日期", "原始分數", "補償加算", "最終總分"]
+        ]
 
         st.dataframe(df_s_display, use_container_width=True)
 
@@ -734,11 +749,15 @@ else:
 
         st.subheader("🗓️ 單週玩家平均準確度榜")
         df_merged["week_range"] = df_merged["date"].apply(get_week_label)
-        acc_weeks = sorted(df_merged["week_range"].unique().tolist(), reverse=True)
+        acc_weeks = sorted(
+            df_merged["week_range"].unique().tolist(), reverse=True
+        )
 
         if acc_weeks:
           sel_acc_week = st.selectbox(
-              "選擇要查看準確度的週別區間 (週一 至 週日)", options=acc_weeks, key="sel_acc_week"
+              "選擇要查看準確度的週別區間 (週一 至 週日)",
+              options=acc_weeks,
+              key="sel_acc_week",
           )
           df_acc_week = df_merged[df_merged["week_range"] == sel_acc_week]
           df_week_avg_acc = (
@@ -919,9 +938,23 @@ else:
     """)
 
     df_comp_rules = pd.DataFrame({
-        "未出賽/延賽人數": ["1 人", "2 人", "3 人", "4 人", "5 人", "6 人 (上限)"],
+        "未出賽/延賽人數": [
+            "1 人",
+            "2 人",
+            "3 人",
+            "4 人",
+            "5 人",
+            "6 人 (上限)",
+        ],
         "實際出賽人數": ["8 人", "7 人", "6 人", "5 人", "4 人", "3 人"],
-        "補償加權乘數": ["× 1.06 (+6%)", "× 1.14 (+14%)", "× 1.25 (+25%)", "× 1.40 (+40%)", "× 1.62 (+62%)", "× 2.00 (+100% 雙倍)"]
+        "補償加權乘數": [
+            "× 1.06 (+6%)",
+            "× 1.14 (+14%)",
+            "× 1.25 (+25%)",
+            "× 1.40 (+40%)",
+            "× 1.62 (+62%)",
+            "× 2.00 (+100% 雙倍)",
+        ],
     })
     st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
 
@@ -931,7 +964,7 @@ else:
 
     if not st.session_state.get("is_admin", False):
       st.error(
-          f"🔒 權限不足：請於左側邊欄輸入正確的管理員驗證碼（密碼）以解鎖！"
+          "🔒 權限不足：請於左側邊欄輸入正確的管理員驗證碼（密碼）以解鎖！"
       )
     else:
       st.subheader("⏰ 調整指定日期比賽截止時間 (如假日提前開打)")
@@ -940,10 +973,9 @@ else:
       ).strftime("%Y-%m-%d")
 
       curr_h, curr_m = get_cutoff_time_for_date(set_date)
-      from datetime import time
 
       set_time = st.time_input(
-          "設定比賽截止時間", value=time(curr_h, curr_m), key="cfg_time"
+          "設定比賽截止時間", value=dt_time(curr_h, curr_m), key="cfg_time"
       )
 
       if st.button("💾 儲存截止時間設定"):
@@ -978,29 +1010,39 @@ else:
           df_stats["calculated_score"] = df_stats.apply(
               calculate_player_score, axis=1
           )
-          
+
           st.session_state.temp_df_stats = df_stats
           st.session_state.temp_target_date = target_date
           st.success("✅ 數據解析成功！請於下方核對玩家補償人數並進行儲存。")
         except Exception as e:
           st.error(f"❌ 數據解析失敗: {e}")
 
-      if "temp_df_stats" in st.session_state and st.session_state.get("temp_target_date") == target_date:
+      if (
+          "temp_df_stats" in st.session_state
+          and st.session_state.get("temp_target_date") == target_date
+      ):
         df_stats = st.session_state.temp_df_stats
-        player_score_dict = dict(zip(df_stats["name"], df_stats["calculated_score"]))
+        player_score_dict = dict(
+            zip(df_stats["name"], df_stats["calculated_score"])
+        )
 
         known_players = set(df_players["name"].tolist())
         imported_players = set(df_stats["name"].tolist())
         missing_players = imported_players - known_players
 
         if missing_players:
-          st.warning(f"⚠️ 發現未登錄球員：【{', '.join(missing_players)}】！已正常計分，有空時補進 players.csv 即可。")
+          st.warning(
+              f"⚠️ 發現未登錄球員：【{', '.join(missing_players)}】！已正常計分，有空時補進"
+              " players.csv 即可。"
+          )
 
         df_cloud_lineups = read_sheet("lineups")
         if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
           df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
           df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
-          df_target = df_target.drop_duplicates(subset=["username", "date"], keep="last")
+          df_target = df_target.drop_duplicates(
+              subset=["username", "date"], keep="last"
+          )
         else:
           df_target = pd.DataFrame()
 
@@ -1009,24 +1051,35 @@ else:
         else:
           st.markdown("---")
           st.markdown("### 🛡️ 第二步：玩家缺席/延賽補償設定")
-          st.caption("請確認每位玩家是否有「未出賽/延賽球員」，系統將自動計算乘以對應加權倍率：")
+          st.caption(
+              "請確認每位玩家是否有「未出賽/延賽球員」，系統將自動計算乘以對應加權倍率："
+          )
 
           comp_selections = {}
           for _, row in df_target.iterrows():
             u_name = row["username"]
             players_selected = [
-                row["catcher"], row["if1"], row["if2"], row["if3"],
-                row["if4"], row["of1"], row["of2"], row["of3"], row["dh"]
+                row["catcher"],
+                row["if1"],
+                row["if2"],
+                row["if3"],
+                row["if4"],
+                row["of1"],
+                row["of2"],
+                row["of3"],
+                row["dh"],
             ]
-            raw_score = sum([player_score_dict.get(p, 0) for p in players_selected])
+            raw_score = sum(
+                [player_score_dict.get(p, 0) for p in players_selected]
+            )
 
             col_u1, col_u2, col_u3 = st.columns([2, 2, 3])
             col_u1.markdown(f"**👤 {u_name}** (原始分: `{raw_score}` 分)")
-            
+
             c_count = col_u2.selectbox(
                 f"缺席/延賽人數 ({u_name})",
                 options=[0, 1, 2, 3, 4, 5, 6],
-                key=f"comp_{u_name}"
+                key=f"comp_{u_name}",
             )
             comp_selections[u_name] = (raw_score, c_count)
 
@@ -1049,13 +1102,22 @@ else:
             for u_name, (raw_score, c_count) in comp_selections.items():
               mult = COMPENSATION_MULTIPLIERS.get(c_count, 1.0)
               final_score = round(raw_score * mult)
-              
-              score_row = [u_name, target_date, final_score, raw_score, c_count]
+
+              score_row = [
+                  u_name,
+                  target_date,
+                  final_score,
+                  raw_score,
+                  c_count,
+              ]
               if write_to_sheet("daily_scores", score_row):
                 success_count += 1
 
-            st.success(f"🎉 {target_date} 數據結算成功！共完成 {success_count} 位玩家之最終成績採計與更新。")
-            
+            st.success(
+                f"🎉 {target_date} 數據結算成功！共完成 {success_count}"
+                " 位玩家之最終成績採計與更新。"
+            )
+
             del st.session_state.temp_df_stats
             del st.session_state.temp_target_date
             st.rerun()
