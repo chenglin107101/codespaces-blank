@@ -66,6 +66,24 @@ def write_to_sheet(sheet_name, row_data):
     return False
 
 
+# 替換前三名為獎牌符號
+def format_medal_index(df):
+  if df.empty:
+    return df
+  new_index = []
+  for i in range(1, len(df) + 1):
+    if i == 1:
+      new_index.append("🥇")
+    elif i == 2:
+      new_index.append("🥈")
+    elif i == 3:
+      new_index.append("🥉")
+    else:
+      new_index.append(str(i))
+  df.index = new_index
+  return df
+
+
 # 側邊欄：身分驗證
 st.sidebar.title("👤 玩家身分驗證")
 user_input = st.sidebar.text_input("請輸入您的姓名 / 暱稱", value="")
@@ -535,7 +553,7 @@ else:
             .sort_values(by="score", ascending=False)
             .reset_index(drop=True)
         )
-        df_day_s.index = df_day_s.index + 1
+        df_day_s = format_medal_index(df_day_s)
 
         df_day_s["comp_str"] = df_day_s["comp_bonus"].apply(
             lambda x: f"+{x}" if x > 0 else "0"
@@ -580,7 +598,7 @@ else:
               .sort_values(by="score", ascending=False)
               .reset_index(drop=True)
           )
-          df_week_sum.index = df_week_sum.index + 1
+          df_week_sum = format_medal_index(df_week_sum)
           df_week_sum.columns = ["玩家", "當週累計總積分"]
 
           st.dataframe(df_week_sum, use_container_width=True)
@@ -594,7 +612,7 @@ else:
             .sort_values(by="score", ascending=False)
             .reset_index(drop=True)
         )
-        df_total.index = df_total.index + 1
+        df_total = format_medal_index(df_total)
         df_total.columns = ["玩家", "賽季累計總積分"]
 
         st.dataframe(df_total, use_container_width=True)
@@ -604,48 +622,103 @@ else:
       st.info("尚無單日結算紀錄。")
 
     st.divider()
+    # 大會紀錄 (Hall of Fame) 重新排版：2 - 2 - 1 結構
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
-    rec_col1, rec_col2 = st.columns(2)
+    df_opt_scores = read_sheet("optimal_scores")
+    df_player_stats = read_sheet("player_stats")
+
+    # 預先計算合理解析紀錄
+    u_top_score_val, u_top_score_name, u_top_score_date = "--", "尚無紀錄", ""
+    u_top_acc_val, u_top_acc_name, u_top_acc_date = "--", "尚無紀錄", ""
+    w_top_score_val, w_top_score_name, w_top_score_date = "--", "尚無紀錄", ""
+    w_top_acc_val, w_top_acc_name, w_top_acc_date = "--", "尚無紀錄", ""
+    p_top_score_val, p_top_score_name, p_top_score_date = "--", "尚無紀錄", ""
 
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s_rec = df_cloud_scores.copy()
       df_s_rec["score"] = pd.to_numeric(df_s_rec["score"], errors="coerce")
+      df_s_rec["date"] = df_s_rec["date"].astype(str)
+      df_s_rec = df_s_rec.drop_duplicates(subset=["username", "date"], keep="last")
+
+      # 1. 玩家單日最高分紀錄
       max_user_row = df_s_rec.sort_values(by="score", ascending=False).iloc[0]
+      u_top_score_val = f"{int(max_user_row['score'])} 分"
+      u_top_score_name = max_user_row["username"]
+      u_top_score_date = max_user_row["date"]
 
-      u_top_score = int(max_user_row["score"])
-      u_top_name = max_user_row["username"]
-      u_top_date = max_user_row["date"]
+      # 準備計算準率 (accuracy) 基礎
+      opt_dict = {}
+      if not df_opt_scores.empty and "optimal_score" in df_opt_scores.columns:
+        for _, r in df_opt_scores.iterrows():
+          opt_dict[str(r["date"])] = float(r["optimal_score"])
 
-      rec_col1.metric(
-          label="👑 玩家單日史上最高分",
-          value=f"{u_top_score} 分",
-          delta=f"{u_top_name} ({u_top_date})",
-      )
-    else:
-      rec_col1.metric(
-          label="👑 玩家單日史上最高分", value="-- 分", delta="尚無紀錄"
-      )
+      if not df_player_stats.empty and "score" in df_player_stats.columns:
+        df_ps_calc = df_player_stats.copy()
+        df_ps_calc["score"] = pd.to_numeric(df_ps_calc["score"], errors="coerce")
+        df_ps_calc["date"] = df_ps_calc["date"].astype(str)
+        for d in df_s_rec["date"].unique():
+          if d not in opt_dict:
+            d_p_stats = df_ps_calc[df_ps_calc["date"] == d]
+            if not d_p_stats.empty:
+              calc_opt, _ = calculate_optimal_score(d_p_stats, df_players)
+              if calc_opt > 0:
+                opt_dict[d] = calc_opt
 
-    df_player_stats = read_sheet("player_stats")
+      df_opt_final = pd.DataFrame(list(opt_dict.items()), columns=["date", "optimal_score"])
+      if not df_opt_final.empty:
+        df_rec_merged = pd.merge(df_s_rec, df_opt_final, on="date", how="inner")
+        df_rec_merged["accuracy"] = df_rec_merged.apply(
+            lambda r: round((r["score"] / r["optimal_score"]) * 100, 1) if r["optimal_score"] > 0 else 0, axis=1
+        )
+
+        # 2. 玩家單日最高準確率
+        max_acc_row = df_rec_merged.sort_values(by="accuracy", ascending=False).iloc[0]
+        u_top_acc_val = f"{max_acc_row['accuracy']}%"
+        u_top_acc_name = max_acc_row["username"]
+        u_top_acc_date = max_acc_row["date"]
+
+        # 4. 玩家單週最高平均準率
+        df_rec_merged["week_range"] = df_rec_merged["date"].apply(get_week_label)
+        w_acc_grp = df_rec_merged.groupby(["username", "week_range"])["accuracy"].mean().reset_index()
+        max_w_acc_row = w_acc_grp.sort_values(by="accuracy", ascending=False).iloc[0]
+        w_top_acc_val = f"{round(max_w_acc_row['accuracy'], 1)}%"
+        w_top_acc_name = max_w_acc_row["username"]
+        w_top_acc_date = max_w_acc_row["week_range"]
+
+      # 3. 玩家單週最高總分
+      df_s_rec["week_range"] = df_s_rec["date"].apply(get_week_label)
+      w_score_grp = df_s_rec.groupby(["username", "week_range"])["score"].sum().reset_index()
+      max_w_score_row = w_score_grp.sort_values(by="score", ascending=False).iloc[0]
+      w_top_score_val = f"{int(max_w_score_row['score'])} 分"
+      w_top_score_name = max_w_score_row["username"]
+      w_top_score_date = max_w_score_row["week_range"]
+
     if not df_player_stats.empty and "score" in df_player_stats.columns:
       df_p_rec = df_player_stats.copy()
       df_p_rec["score"] = pd.to_numeric(df_p_rec["score"], errors="coerce")
       max_p_row = df_p_rec.sort_values(by="score", ascending=False).iloc[0]
+      p_top_score_val = f"{int(max_p_row['score'])} 分"
+      p_top_score_name = max_p_row["name"]
+      p_top_score_date = max_p_row["date"]
 
-      p_top_score = int(max_p_row["score"])
-      p_top_name = max_p_row["name"]
-      p_top_date = max_p_row["date"]
+    # 第一行 (2個卡片)
+    r1_col1, r1_col2 = st.columns(2)
+    r1_col1.metric(label="👑 1. 玩家單日最高分紀錄", value=u_top_score_val, delta=f"{u_top_score_name} ({u_top_score_date})" if u_top_score_date else u_top_score_name)
+    r1_col2.metric(label="🎯 2. 玩家單日最高準確率", value=u_top_acc_val, delta=f"{u_top_acc_name} ({u_top_acc_date})" if u_top_acc_date else u_top_acc_name)
 
-      rec_col2.metric(
-          label="⚾ 單一球員單場最高得分",
-          value=f"{p_top_score} 分",
-          delta=f"{p_top_name} ({p_top_date})",
-      )
-    else:
-      rec_col2.metric(
-          label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
-      )
+    st.write("") # 空行間隔
+
+    # 第二行 (2個卡片)
+    r2_col1, r2_col2 = st.columns(2)
+    r2_col1.metric(label="🗓️ 3. 玩家單週最高總分", value=w_top_score_val, delta=f"{w_top_score_name} ({w_top_score_date})" if w_top_score_date else w_top_score_name)
+    r2_col2.metric(label="📈 4. 玩家單週最高平均準率", value=w_top_acc_val, delta=f"{w_top_acc_name} ({w_top_acc_date})" if w_top_acc_date else w_top_acc_name)
+
+    st.write("") # 空行間隔
+
+    # 第三行 (1個卡片)
+    r3_col1, _ = st.columns([1, 1])
+    r3_col1.metric(label="⚾ 5. 單一球員單場最高得分", value=p_top_score_val, delta=f"{p_top_score_name} ({p_top_score_date})" if p_top_score_date else p_top_score_name)
 
   # TAB 3: 🎯 玩家準確度排行榜
   with tab3:
@@ -729,7 +802,7 @@ else:
           st.info(f"🌟 **{sel_acc_date} 當日理論完美最高總分**：`{opt_val}` 分")
 
           df_acc_day_display = df_acc_day.reset_index(drop=True)
-          df_acc_day_display.index = df_acc_day_display.index + 1
+          df_acc_day_display = format_medal_index(df_acc_day_display)
           df_acc_day_display["accuracy_str"] = df_acc_day_display[
               "accuracy"
           ].astype(str) + "%"
@@ -767,7 +840,7 @@ else:
               .sort_values(by="accuracy", ascending=False)
               .reset_index(drop=True)
           )
-          df_week_avg_acc.index = df_week_avg_acc.index + 1
+          df_week_avg_acc = format_medal_index(df_week_avg_acc)
           df_week_avg_acc["accuracy"] = (
               df_week_avg_acc["accuracy"].round(1).astype(str) + "%"
           )
@@ -785,7 +858,7 @@ else:
             .sort_values(by="accuracy", ascending=False)
             .reset_index(drop=True)
         )
-        df_avg_acc.index = df_avg_acc.index + 1
+        df_avg_acc = format_medal_index(df_avg_acc)
         df_avg_acc["accuracy"] = (
             df_avg_acc["accuracy"].round(1).astype(str) + "%"
         )
@@ -827,7 +900,7 @@ else:
           with p_col1:
             st.markdown("##### 🚀 當日最高得分球員 (Top 3)")
             top_3 = df_ps_day.head(3).reset_index(drop=True)
-            top_3.index = top_3.index + 1
+            top_3 = format_medal_index(top_3)
             top_3_display = top_3.rename(
                 columns={"name": "球員姓名", "score": "貢獻分數"}
             )[["球員姓名", "貢獻分數"]]
@@ -849,7 +922,7 @@ else:
           st.divider()
           st.markdown("##### 📊 當日全體球員得分明細表")
           df_ps_all = df_ps_day.reset_index(drop=True)
-          df_ps_all.index = df_ps_all.index + 1
+          df_ps_all = format_medal_index(df_ps_all)
           st.dataframe(
               df_ps_all.rename(
                   columns={"name": "球員姓名", "score": "當日獲得分數"}
