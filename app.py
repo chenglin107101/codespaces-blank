@@ -82,12 +82,12 @@ else:
 st.session_state.is_admin = is_admin_verified
 
 
-# 取得指定日期的截止時間
+# 精準取得指定日期的截止時間 (優先讀取 settings 工作表)
 def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
   if not df_settings.empty and "date" in df_settings.columns:
     df_settings["date"] = df_settings["date"].astype(str)
-    matched = df_settings[df_settings["date"] == date_str]
+    matched = df_settings[df_settings["date"] == str(date_str)]
     if not matched.empty:
       time_str = str(matched.iloc[-1].get("cutoff_time", "18:35")).strip()
       try:
@@ -102,12 +102,14 @@ tw_tz = pytz.timezone("Asia/Taipei")
 now_tw = datetime.now(tw_tz)
 today_str = now_tw.strftime("%Y-%m-%d")
 
+# 計算今天正確的截止 datetime 物件
 today_h, today_m = get_cutoff_time_for_date(today_str)
-cutoff_time_today = now_tw.replace(
+cutoff_dt_today = now_tw.replace(
     hour=today_h, minute=today_m, second=0, microsecond=0
 )
 
-if now_tw >= cutoff_time_today:
+# 若當前時間已經過了今天的截止時間，預設比賽日期切換為明天
+if now_tw >= cutoff_dt_today:
   default_game_date = (now_tw + timedelta(days=1)).date()
 else:
   default_game_date = now_tw.date()
@@ -171,6 +173,11 @@ def calculate_optimal_score(df_stats, df_players):
   if df_stats.empty or df_players.empty:
     return 0, []
 
+  if "calculated_score" not in df_stats.columns and "score" in df_stats.columns:
+    df_stats["calculated_score"] = pd.to_numeric(
+        df_stats["score"], errors="coerce"
+    )
+
   pos_dict = dict(zip(df_players["name"], df_players["position"]))
   df_eval = df_stats.copy()
   df_eval["position"] = df_eval["name"].map(pos_dict).fillna("未知")
@@ -187,19 +194,15 @@ def calculate_optimal_score(df_stats, df_players):
 
   selected_indices = []
 
-  # 1. 最佳 1 捕
   top_c = catchers.head(1)
   selected_indices.extend(top_c.index.tolist())
 
-  # 2. 最佳 4 內
   top_if = infielders.head(4)
   selected_indices.extend(top_if.index.tolist())
 
-  # 3. 最佳 3 外
   top_of = outfielders.head(3)
   selected_indices.extend(top_of.index.tolist())
 
-  # 4. 最佳 1 DH
   remaining = df_eval.drop(index=selected_indices, errors="ignore")
   top_dh = remaining.sort_values(
       by="calculated_score", ascending=False
@@ -251,20 +254,30 @@ else:
         "選擇比賽日期", value=default_game_date, key="lineup_date"
     ).strftime("%Y-%m-%d")
 
+    # 針對選定的 game_date 精準抓取截止時間
     c_h, c_m = get_cutoff_time_for_date(game_date)
+    g_year, g_month, g_day = map(int, game_date.split("-"))
     game_cutoff_dt = now_tw.replace(
-        year=int(game_date.split("-")[0]),
-        month=int(game_date.split("-")[1]),
-        day=int(game_date.split("-")[2]),
+        year=g_year,
+        month=g_month,
+        day=g_day,
         hour=c_h,
         minute=c_m,
         second=0,
         microsecond=0,
     )
 
+    # 判斷當前是否已經過了該比賽日期的截止時間
+    is_cutoff_passed = now_tw >= game_cutoff_dt
+
     st.caption(
         f"🕒 {game_date} 比賽截止時間為：**{c_h:02d}:{c_m:02d}**（開打前陣容保密，截止後自動公開）"
     )
+
+    if is_cutoff_passed:
+      st.warning(
+          f"⏰ {game_date} 的比賽截止時間（{c_h:02d}:{c_m:02d}）已過，無法再修改或儲存今日陣容！"
+      )
 
     st.subheader(
         f"【{st.session_state.user}】請安排 {game_date} 的守備陣容 (1捕 + 4內 +"
@@ -361,9 +374,12 @@ else:
             "指定打擊 (DH)", options=dh_options, index=idx_dh, key="pos_dh"
         )
 
-        submit = st.form_submit_button("儲存今日陣容")
+        # 時間過了就鎖定按鈕不可點擊
+        submit = st.form_submit_button(
+            "儲存今日陣容", disabled=is_cutoff_passed
+        )
 
-        if submit:
+        if submit and not is_cutoff_passed:
           selected_all = [
               c_select,
               if1,
@@ -401,7 +417,7 @@ else:
             subset=["username", "date"], keep="last"
         )
 
-      is_locked = now_tw < game_cutoff_dt
+      is_locked = not is_cutoff_passed  # 沒過截止時間一律保密
 
       rename_dict = {
           "username": "玩家",
@@ -592,82 +608,116 @@ else:
 
     df_cloud_scores = read_sheet("daily_scores")
     df_opt_scores = read_sheet("optimal_scores")
+    df_player_stats = read_sheet("player_stats")
 
-    if (
-        not df_cloud_scores.empty
-        and "score" in df_cloud_scores.columns
-        and not df_opt_scores.empty
-        and "optimal_score" in df_opt_scores.columns
-    ):
+    if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s_acc = df_cloud_scores.drop_duplicates(
           subset=["username", "date"], keep="last"
       ).copy()
       df_s_acc["score"] = pd.to_numeric(df_s_acc["score"], errors="coerce")
       df_s_acc["date"] = df_s_acc["date"].astype(str)
 
-      df_opt_scores["optimal_score"] = pd.to_numeric(
-          df_opt_scores["optimal_score"], errors="coerce"
-      )
-      df_opt_scores["date"] = df_opt_scores["date"].astype(str)
-
-      df_merged = pd.merge(df_s_acc, df_opt_scores, on="date", how="inner")
-
-      def calc_ratio(row):
-        opt = row["optimal_score"]
-        act = row["score"]
-        if pd.isna(opt) or opt <= 0:
-          return 0.0
-        return round((act / opt) * 100, 1)
-
-      df_merged["accuracy"] = df_merged.apply(calc_ratio, axis=1)
-
-      st.subheader("📅 單日玩家陣容準確度榜")
-      acc_dates = sorted(df_merged["date"].unique().tolist(), reverse=True)
-      if acc_dates:
-        sel_acc_date = st.selectbox(
-            "選擇要查看準確度的比賽日期", options=acc_dates, key="sel_acc_date"
+      if not df_player_stats.empty and "score" in df_player_stats.columns:
+        df_ps_calc = df_player_stats.copy()
+        df_ps_calc["score"] = pd.to_numeric(
+            df_ps_calc["score"], errors="coerce"
         )
-        df_acc_day = df_merged[df_merged["date"] == sel_acc_date].sort_values(
-            by="accuracy", ascending=False
+        df_ps_calc["date"] = df_ps_calc["date"].astype(str)
+
+        all_dates = df_s_acc["date"].unique().tolist()
+        opt_dict = {}
+
+        if not df_opt_scores.empty and "optimal_score" in df_opt_scores.columns:
+          for _, r in df_opt_scores.iterrows():
+            opt_dict[str(r["date"])] = float(r["optimal_score"])
+
+        for d in all_dates:
+          if d not in opt_dict:
+            d_p_stats = df_ps_calc[df_ps_calc["date"] == d]
+            if not d_p_stats.empty:
+              calc_opt, _ = calculate_optimal_score(d_p_stats, df_players)
+              if calc_opt > 0:
+                opt_dict[d] = calc_opt
+
+        df_opt_final = pd.DataFrame(
+            list(opt_dict.items()), columns=["date", "optimal_score"]
         )
-
-        opt_val = df_acc_day["optimal_score"].iloc[0] if not df_acc_day.empty else "--"
-        st.info(f"🌟 **{sel_acc_date} 當日理論完美最高總分**：`{opt_val}` 分")
-
-        df_acc_day_display = df_acc_day.reset_index(drop=True)
-        df_acc_day_display.index = df_acc_day_display.index + 1
-        df_acc_day_display["accuracy_str"] = df_acc_day_display[
-            "accuracy"
-        ].astype(str) + "%"
-
-        st.dataframe(
-            df_acc_day_display.rename(
-                columns={
-                    "username": "玩家",
-                    "score": "當日實得分數",
-                    "accuracy_str": "陣容達成率 (準確度)",
-                }
-            )[["玩家", "當日實得分數", "陣容達成率 (準確度)"]],
-            use_container_width=True,
+      elif not df_opt_scores.empty:
+        df_opt_final = df_opt_scores.copy()
+        df_opt_final["optimal_score"] = pd.to_numeric(
+            df_opt_final["optimal_score"], errors="coerce"
         )
+        df_opt_final["date"] = df_opt_final["date"].astype(str)
+      else:
+        df_opt_final = pd.DataFrame()
 
-      st.divider()
-      st.subheader("🏆 賽季玩家平均準確度總榜")
-      df_avg_acc = (
-          df_merged.groupby("username")["accuracy"]
-          .mean()
-          .reset_index()
-          .sort_values(by="accuracy", ascending=False)
-          .reset_index(drop=True)
-      )
-      df_avg_acc.index = df_avg_acc.index + 1
-      df_avg_acc["accuracy"] = df_avg_acc["accuracy"].round(1).astype(str) + "%"
-      df_avg_acc.columns = ["玩家", "賽季平均準確度 (達成率)"]
+      if not df_opt_final.empty:
+        df_merged = pd.merge(df_s_acc, df_opt_final, on="date", how="inner")
 
-      st.dataframe(df_avg_acc, use_container_width=True)
+        def calc_ratio(row):
+          opt = row["optimal_score"]
+          act = row["score"]
+          if pd.isna(opt) or opt <= 0:
+            return 0.0
+          return round((act / opt) * 100, 1)
 
+        df_merged["accuracy"] = df_merged.apply(calc_ratio, axis=1)
+
+        st.subheader("📅 單日玩家陣容準確度榜")
+        acc_dates = sorted(df_merged["date"].unique().tolist(), reverse=True)
+        if acc_dates:
+          sel_acc_date = st.selectbox(
+              "選擇要查看準確度的比賽日期", options=acc_dates, key="sel_acc_date"
+          )
+          df_acc_day = df_merged[df_merged["date"] == sel_acc_date].sort_values(
+              by="accuracy", ascending=False
+          )
+
+          opt_val = (
+              df_acc_day["optimal_score"].iloc[0]
+              if not df_acc_day.empty
+              else "--"
+          )
+          st.info(f"🌟 **{sel_acc_date} 當日理論完美最高總分**：`{opt_val}` 分")
+
+          df_acc_day_display = df_acc_day.reset_index(drop=True)
+          df_acc_day_display.index = df_acc_day_display.index + 1
+          df_acc_day_display["accuracy_str"] = df_acc_day_display[
+              "accuracy"
+          ].astype(str) + "%"
+
+          st.dataframe(
+              df_acc_day_display.rename(
+                  columns={
+                      "username": "玩家",
+                      "score": "當日實得分數",
+                      "accuracy_str": "陣容達成率 (準確度)",
+                  }
+              )[["玩家", "當日實得分數", "陣容達成率 (準確度)"]],
+              use_container_width=True,
+          )
+
+        st.divider()
+        st.subheader("🏆 賽季玩家平均準確度總榜")
+        df_avg_acc = (
+            df_merged.groupby("username")["accuracy"]
+            .mean()
+            .reset_index()
+            .sort_values(by="accuracy", ascending=False)
+            .reset_index(drop=True)
+        )
+        df_avg_acc.index = df_avg_acc.index + 1
+        df_avg_acc["accuracy"] = (
+            df_avg_acc["accuracy"].round(1).astype(str) + "%"
+        )
+        df_avg_acc.columns = ["玩家", "賽季平均準確度 (達成率)"]
+
+        st.dataframe(df_avg_acc, use_container_width=True)
+
+      else:
+        st.info("尚無足夠的完美總分數據進行計算。")
     else:
-      st.info("尚無足夠的完美總分數據進行計算。")
+      st.info("尚無單日結算紀錄。")
 
   # TAB 4: 當日球員表現榜
   with tab4:
@@ -860,7 +910,6 @@ else:
               zip(df_stats["name"], df_stats["calculated_score"])
           )
 
-          # 檢查是否有未登錄於 players.csv 的球員 (警示但不卡死結算)
           known_players = set(df_players["name"].tolist())
           imported_players = set(df_stats["name"].tolist())
           missing_players = imported_players - known_players
@@ -872,13 +921,11 @@ else:
                 " players.csv 補上即可。"
             )
 
-          # 1. 算當日完美總分並寫入 optimal_scores
           opt_score, opt_players = calculate_optimal_score(
               df_stats, df_players
           )
           write_to_sheet("optimal_scores", [target_date, int(opt_score)])
 
-          # 2. 上傳球員個人成績至 player_stats
           for _, p_row in df_stats.iterrows():
             write_to_sheet("player_stats", [
                 p_row["name"],
@@ -886,7 +933,6 @@ else:
                 int(p_row["calculated_score"]),
             ])
 
-          # 3. 結算玩家團隊分數並寫入 daily_scores (核心功能)
           df_cloud_lineups = read_sheet("lineups")
           if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
             df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
