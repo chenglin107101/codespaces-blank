@@ -242,6 +242,17 @@ def get_index(options, target_val):
   return 0
 
 
+# 計算週別區間標籤 (週一 至 週日)
+def get_week_label(d_str):
+  try:
+    dt = datetime.strptime(str(d_str), "%Y-%m-%d")
+    start_of_week = dt - timedelta(days=dt.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+    return f"{start_of_week.strftime('%Y-%m-%d')} ~ {end_of_week.strftime('%Y-%m-%d')}"
+  except:
+    return "未知週別"
+
+
 # 主頁面
 if st.session_state.user is None:
   st.info("👈 請先於左側邊欄【輸入您的姓名 / 暱稱】，即可開始使用！")
@@ -480,15 +491,23 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 玩家積分排行榜
+  # TAB 2: 玩家積分排行榜 (含原始分、補償分數、最終總分)
   with tab2:
     df_cloud_scores = read_sheet("daily_scores")
 
     st.subheader("📅 單日玩家得分榜")
     if not df_cloud_scores.empty and "score" in df_cloud_scores.columns:
       df_s = df_cloud_scores.copy()
-      df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce")
+      df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce").fillna(0).astype(int)
       df_s["date"] = df_s["date"].astype(str)
+
+      # 相容處理歷史補償資料欄位
+      if "raw_score" in df_s.columns:
+        df_s["raw_score"] = pd.to_numeric(df_s["raw_score"], errors="coerce").fillna(df_s["score"]).astype(int)
+      else:
+        df_s["raw_score"] = df_s["score"]
+
+      df_s["comp_bonus"] = df_s["score"] - df_s["raw_score"]
 
       available_dates = sorted(df_s["date"].unique().tolist(), reverse=True)
 
@@ -507,26 +526,22 @@ else:
         )
         df_day_s.index = df_day_s.index + 1
 
+        # 明確格式化補償加算顯示
+        df_day_s["comp_str"] = df_day_s["comp_bonus"].apply(lambda x: f"+{x}" if x > 0 else "0")
+
         rename_daily = {
             "username": "玩家",
             "date": "比賽日期",
-            "score": "當日得分",
+            "raw_score": "原始分數",
+            "comp_str": "補償加算",
+            "score": "最終總分",
         }
-        df_s_display = df_day_s.rename(columns=rename_daily)
+        df_s_display = df_day_s.rename(columns=rename_daily)[["玩家", "比賽日期", "原始分數", "補償加算", "最終總分"]]
 
         st.dataframe(df_s_display, use_container_width=True)
 
         st.divider()
         st.subheader("🗓️ 單週玩家積分榜")
-
-        def get_week_label(d_str):
-          dt = datetime.strptime(d_str, "%Y-%m-%d")
-          start_of_week = dt - timedelta(days=dt.weekday())
-          end_of_week = start_of_week + timedelta(days=6)
-          return (
-              f"{start_of_week.strftime('%Y-%m-%d')} ~"
-              f" {end_of_week.strftime('%Y-%m-%d')}"
-          )
 
         df_s_clean = df_s.drop_duplicates(
             subset=["username", "date"], keep="last"
@@ -552,7 +567,7 @@ else:
               .reset_index(drop=True)
           )
           df_week_sum.index = df_week_sum.index + 1
-          df_week_sum.columns = ["玩家", "當週總積分"]
+          df_week_sum.columns = ["玩家", "當週累計總積分"]
 
           st.dataframe(df_week_sum, use_container_width=True)
 
@@ -566,7 +581,7 @@ else:
             .reset_index(drop=True)
         )
         df_total.index = df_total.index + 1
-        df_total.columns = ["玩家", "累計總積分"]
+        df_total.columns = ["玩家", "賽季累計總積分"]
 
         st.dataframe(df_total, use_container_width=True)
       else:
@@ -618,7 +633,7 @@ else:
           label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
       )
 
-  # TAB 3: 🎯 玩家準確度排行榜
+  # TAB 3: 🎯 玩家準確度排行榜 (包含單日、單週、賽季累積)
   with tab3:
     st.header("🎯 玩家陣容準確度排行榜 (Optimality Ratio)")
     st.caption(
@@ -682,6 +697,7 @@ else:
 
         df_merged["accuracy"] = df_merged.apply(calc_ratio, axis=1)
 
+        # 1. 單日準確度
         st.subheader("📅 單日玩家陣容準確度榜")
         acc_dates = sorted(df_merged["date"].unique().tolist(), reverse=True)
         if acc_dates:
@@ -717,6 +733,35 @@ else:
           )
 
         st.divider()
+
+        # 2. 單週準確度 (新功能)
+        st.subheader("🗓️ 單週玩家平均準確度榜")
+        df_merged["week_range"] = df_merged["date"].apply(get_week_label)
+        acc_weeks = sorted(df_merged["week_range"].unique().tolist(), reverse=True)
+
+        if acc_weeks:
+          sel_acc_week = st.selectbox(
+              "選擇要查看準確度的週別區間 (週一 至 週日)", options=acc_weeks, key="sel_acc_week"
+          )
+          df_acc_week = df_merged[df_merged["week_range"] == sel_acc_week]
+          df_week_avg_acc = (
+              df_acc_week.groupby("username")["accuracy"]
+              .mean()
+              .reset_index()
+              .sort_values(by="accuracy", ascending=False)
+              .reset_index(drop=True)
+          )
+          df_week_avg_acc.index = df_week_avg_acc.index + 1
+          df_week_avg_acc["accuracy"] = (
+              df_week_avg_acc["accuracy"].round(1).astype(str) + "%"
+          )
+          df_week_avg_acc.columns = ["玩家", "當週平均準確度 (達成率)"]
+
+          st.dataframe(df_week_avg_acc, use_container_width=True)
+
+        st.divider()
+
+        # 3. 賽季總累積準確度
         st.subheader("🏆 賽季玩家平均準確度總榜")
         df_avg_acc = (
             df_merged.groupby("username")["accuracy"]
@@ -801,7 +846,7 @@ else:
     else:
       st.info("尚無球員單日得分紀錄。")
 
-  # TAB 5: 計分規則 (已新增缺席/延賽補償對照表)
+  # TAB 5: 計分規則
   with tab5:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
@@ -884,7 +929,7 @@ else:
     })
     st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
 
-  # TAB 6: 管理者專區 (包含二階段補償結算)
+  # TAB 6: 管理者專區 (二階段補償結算，寫入完整細節)
   with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -929,7 +974,6 @@ else:
           "貼上數據區域", value=default_csv_example, height=200
       )
 
-      # 步驟一：解析當日數據與球員得分
       if st.button("🔍 第一步：解析當日數據與陣容"):
         try:
           from io import StringIO
@@ -945,7 +989,6 @@ else:
         except Exception as e:
           st.error(f"❌ 數據解析失敗: {e}")
 
-      # 步驟二：如果已解析數據，列出玩家並可選擇補償人數
       if "temp_df_stats" in st.session_state and st.session_state.get("temp_target_date") == target_date:
         df_stats = st.session_state.temp_df_stats
         player_score_dict = dict(zip(df_stats["name"], df_stats["calculated_score"]))
@@ -1008,18 +1051,18 @@ else:
                   int(p_row["calculated_score"]),
               ])
 
-            # 3. 寫入玩家加權後的最終成績
+            # 3. 寫入玩家加權後的最終成績與明細 (新增寫入 raw_score 與 c_count)
             success_count = 0
             for u_name, (raw_score, c_count) in comp_selections.items():
               mult = COMPENSATION_MULTIPLIERS.get(c_count, 1.0)
               final_score = round(raw_score * mult)
-              score_row = [u_name, target_date, final_score]
+              
+              score_row = [u_name, target_date, final_score, raw_score, c_count]
               if write_to_sheet("daily_scores", score_row):
                 success_count += 1
 
             st.success(f"🎉 {target_date} 數據結算成功！共完成 {success_count} 位玩家之最終成績採計與更新。")
             
-            # 清理 session_state
             del st.session_state.temp_df_stats
             del st.session_state.temp_target_date
             st.rerun()
