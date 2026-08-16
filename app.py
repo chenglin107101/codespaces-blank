@@ -14,6 +14,17 @@ st.title("⚾ 阿凜的中職夢幻聯賽")
 ADMIN_USER = "謝正凜"
 ADMIN_PIN = "0705"
 
+# 補償倍率對照表 (缺席人數: 倍率)
+COMPENSATION_MULTIPLIERS = {
+    0: 1.0,      # 正常出賽 (乘 1.0)
+    1: 1.06,     # 缺席 1 人 (約 +6%)
+    2: 1.14,     # 缺席 2 人 (約 +14%)
+    3: 1.25,     # 缺席 3 人 (約 +25%)
+    4: 1.40,     # 缺席 4 人 (約 +40%)
+    5: 1.62,     # 缺席 5 人 (約 +62%)
+    6: 2.00      # 缺席 6 人 (雙倍 x2.0)
+}
+
 # 取得 Google Sheet 網址與 Apps Script URL
 try:
   SHEET_URL = st.secrets["spreadsheet"]
@@ -25,11 +36,10 @@ except Exception as e:
   SCRIPT_URL = ""
 
 
-# 讀取 Google 試算表指定工作表為 DataFrame (加入防快取參數)
+# 讀取 Google 試算表指定工作表為 DataFrame (防快取)
 def read_sheet(sheet_name):
   if not SHEET_ID:
     return pd.DataFrame()
-  # 加入 timestamp 避開 Google Sheet 快取
   nocache_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}&_nocache={int(time.time())}"
   try:
     df = pd.read_csv(nocache_url)
@@ -84,13 +94,12 @@ else:
 st.session_state.is_admin = is_admin_verified
 
 
-# 超強彈性取得指定日期的截止時間
+# 精準取得指定日期的截止時間
 def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
   if not df_settings.empty:
     target_clean = str(date_str).replace("/", "-").strip()
     
-    # 尋找 date 相關欄位
     date_col = None
     for col in df_settings.columns:
       if "date" in col:
@@ -104,7 +113,6 @@ def get_cutoff_time_for_date(date_str):
       matched = df_settings[df_settings["clean_date"] == target_clean]
       
       if not matched.empty:
-        # 抓最後一欄或 cutoff_time 欄位
         time_val = str(matched.iloc[-1].iloc[1] if len(matched.columns) > 1 else "18:35").strip()
         try:
           h, m = map(int, time_val.split(":"))
@@ -793,7 +801,7 @@ else:
     else:
       st.info("尚無球員單日得分紀錄。")
 
-  # TAB 5: 計分規則
+  # TAB 5: 計分規則 (已新增缺席/延賽補償對照表)
   with tab5:
     st.header("📜 阿凜的中職夢幻聯賽 - 計分規則總覽")
 
@@ -862,9 +870,21 @@ else:
       })
       st.dataframe(df_bonus, use_container_width=True, hide_index=True)
 
-    st.info("💡 註：所有特殊里程碑加碼項目均採【階梯式不重複採計】。")
+    st.divider()
+    st.subheader("🛡️ 缺席 / 延賽球員補償機制說明")
+    st.markdown("""
+    當玩家選擇的球員因**休兵 (DNP)**、**未登錄** 或 **賽事延賽** 導致無法出賽時，管理者可於後台啟動補償機制：
+    * 補償公式：`當日最終得分` = `原始團隊得分` × `補償加權倍率` *(四捨五入至整數)*
+    """)
 
-  # TAB 6: 管理者專區
+    df_comp_rules = pd.DataFrame({
+        "未出賽/延賽人數": ["1 人", "2 人", "3 人", "4 人", "5 人", "6 人 (上限)"],
+        "實際出賽人數": ["8 人", "7 人", "6 人", "5 人", "4 人", "3 人"],
+        "補償加權乘數": ["× 1.06 (+6%)", "× 1.14 (+14%)", "× 1.25 (+25%)", "× 1.40 (+40%)", "× 1.62 (+62%)", "× 2.00 (+100% 雙倍)"]
+    })
+    st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
+
+  # TAB 6: 管理者專區 (包含二階段補償結算)
   with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -909,7 +929,8 @@ else:
           "貼上數據區域", value=default_csv_example, height=200
       )
 
-      if st.button("🚀 開始計算並結算此日得分"):
+      # 步驟一：解析當日數據與球員得分
+      if st.button("🔍 第一步：解析當日數據與陣容"):
         try:
           from io import StringIO
 
@@ -917,79 +938,88 @@ else:
           df_stats["calculated_score"] = df_stats.apply(
               calculate_player_score, axis=1
           )
-          player_score_dict = dict(
-              zip(df_stats["name"], df_stats["calculated_score"])
-          )
+          
+          st.session_state.temp_df_stats = df_stats
+          st.session_state.temp_target_date = target_date
+          st.success("✅ 數據解析成功！請於下方核對玩家補償人數並進行儲存。")
+        except Exception as e:
+          st.error(f"❌ 數據解析失敗: {e}")
 
-          known_players = set(df_players["name"].tolist())
-          imported_players = set(df_stats["name"].tolist())
-          missing_players = imported_players - known_players
+      # 步驟二：如果已解析數據，列出玩家並可選擇補償人數
+      if "temp_df_stats" in st.session_state and st.session_state.get("temp_target_date") == target_date:
+        df_stats = st.session_state.temp_df_stats
+        player_score_dict = dict(zip(df_stats["name"], df_stats["calculated_score"]))
 
-          if missing_players:
-            st.warning(
-                f"⚠️ 發現 {len(missing_players)} 位球員未登錄於 players.csv："
-                f" 【{', '.join(missing_players)}】！已正常採計玩家得分，有空時再請至"
-                " players.csv 補上即可。"
-            )
+        known_players = set(df_players["name"].tolist())
+        imported_players = set(df_stats["name"].tolist())
+        missing_players = imported_players - known_players
 
-          opt_score, opt_players = calculate_optimal_score(
-              df_stats, df_players
-          )
-          write_to_sheet("optimal_scores", [target_date, int(opt_score)])
+        if missing_players:
+          st.warning(f"⚠️ 發現未登錄球員：【{', '.join(missing_players)}】！已正常計分，有空時補進 players.csv 即可。")
 
-          for _, p_row in df_stats.iterrows():
-            write_to_sheet("player_stats", [
-                p_row["name"],
-                target_date,
-                int(p_row["calculated_score"]),
-            ])
+        df_cloud_lineups = read_sheet("lineups")
+        if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
+          df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
+          df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
+          df_target = df_target.drop_duplicates(subset=["username", "date"], keep="last")
+        else:
+          df_target = pd.DataFrame()
 
-          df_cloud_lineups = read_sheet("lineups")
-          if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
-            df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
-            df_target = df_cloud_lineups[
-                df_cloud_lineups["date"] == target_date
+        if df_target.empty:
+          st.warning(f"⚠️ {target_date} 沒有任何玩家提交陣容！")
+        else:
+          st.markdown("---")
+          st.markdown("### 🛡️ 第二步：玩家缺席/延賽補償設定")
+          st.caption("請確認每位玩家是否有「未出賽/延賽球員」，系統將自動計算乘以對應加權倍率：")
+
+          comp_selections = {}
+          for _, row in df_target.iterrows():
+            u_name = row["username"]
+            players_selected = [
+                row["catcher"], row["if1"], row["if2"], row["if3"],
+                row["if4"], row["of1"], row["of2"], row["of3"], row["dh"]
             ]
-            df_target = df_target.drop_duplicates(
-                subset=["username", "date"], keep="last"
+            raw_score = sum([player_score_dict.get(p, 0) for p in players_selected])
+
+            col_u1, col_u2, col_u3 = st.columns([2, 2, 3])
+            col_u1.markdown(f"**👤 {u_name}** (原始分: `{raw_score}` 分)")
+            
+            c_count = col_u2.selectbox(
+                f"缺席/延賽人數 ({u_name})",
+                options=[0, 1, 2, 3, 4, 5, 6],
+                key=f"comp_{u_name}"
             )
-          else:
-            df_target = pd.DataFrame()
+            comp_selections[u_name] = (raw_score, c_count)
 
-          if df_target.empty:
-            st.warning(f"⚠️ {target_date} 沒有任何玩家提交陣容！")
-          else:
+            mult = COMPENSATION_MULTIPLIERS.get(c_count, 1.0)
+            final_calc = round(raw_score * mult)
+            col_u3.caption(f"乘數: `x{mult}` ➔ 最終得分: **{final_calc}** 分")
+
+          if st.button("🚀 儲存並發布最終結算成績"):
+            # 1. 寫入完美總分
+            opt_score, _ = calculate_optimal_score(df_stats, df_players)
+            write_to_sheet("optimal_scores", [target_date, int(opt_score)])
+
+            # 2. 寫入球員個人數據
+            for _, p_row in df_stats.iterrows():
+              write_to_sheet("player_stats", [
+                  p_row["name"],
+                  target_date,
+                  int(p_row["calculated_score"]),
+              ])
+
+            # 3. 寫入玩家加權後的最終成績
             success_count = 0
-            for _, row in df_target.iterrows():
-              u_name = row["username"]
-              players_selected = [
-                  row["catcher"],
-                  row["if1"],
-                  row["if2"],
-                  row["if3"],
-                  row["if4"],
-                  row["of1"],
-                  row["of2"],
-                  row["of3"],
-                  row["dh"],
-              ]
-              total_team_score = sum(
-                  [player_score_dict.get(p, 0) for p in players_selected]
-              )
-
-              score_row = [u_name, target_date, total_team_score]
+            for u_name, (raw_score, c_count) in comp_selections.items():
+              mult = COMPENSATION_MULTIPLIERS.get(c_count, 1.0)
+              final_score = round(raw_score * mult)
+              score_row = [u_name, target_date, final_score]
               if write_to_sheet("daily_scores", score_row):
                 success_count += 1
 
-            st.success(
-                f"🎉 {target_date} 數據結算成功！共完成 {success_count} 位玩家的分數採計與排行榜更新。"
-            )
+            st.success(f"🎉 {target_date} 數據結算成功！共完成 {success_count} 位玩家之最終成績採計與更新。")
+            
+            # 清理 session_state
+            del st.session_state.temp_df_stats
+            del st.session_state.temp_target_date
             st.rerun()
-
-            st.write("### 當日球員得分明細：")
-            st.dataframe(
-                df_stats[["name", "calculated_score"]], use_container_width=True
-            )
-
-        except Exception as e:
-          st.error(f"❌ 數據格式有誤！錯誤訊息: {e}")
