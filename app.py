@@ -36,14 +36,15 @@ except Exception as e:
   SCRIPT_URL = ""
 
 
-# 讀取 Google 試算表指定工作表為 DataFrame (防快取)
+# 安全讀取 Google 試算表 (防護空值與大小寫)
 def read_sheet(sheet_name):
   if not SHEET_ID:
     return pd.DataFrame()
   nocache_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}&_nocache={int(time.time())}"
   try:
     df = pd.read_csv(nocache_url)
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    if not df.empty:
+      df.columns = [str(c).strip().lower() for c in df.columns]
     return df
   except Exception as e:
     return pd.DataFrame()
@@ -491,7 +492,7 @@ else:
     else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-  # TAB 2: 玩家積分排行榜 (含原始分、補償分數、最終總分)
+  # TAB 2: 玩家積分排行榜
   with tab2:
     df_cloud_scores = read_sheet("daily_scores")
 
@@ -501,7 +502,6 @@ else:
       df_s["score"] = pd.to_numeric(df_s["score"], errors="coerce").fillna(0).astype(int)
       df_s["date"] = df_s["date"].astype(str)
 
-      # 相容處理歷史補償資料欄位
       if "raw_score" in df_s.columns:
         df_s["raw_score"] = pd.to_numeric(df_s["raw_score"], errors="coerce").fillna(df_s["score"]).astype(int)
       else:
@@ -526,7 +526,6 @@ else:
         )
         df_day_s.index = df_day_s.index + 1
 
-        # 明確格式化補償加算顯示
         df_day_s["comp_str"] = df_day_s["comp_bonus"].apply(lambda x: f"+{x}" if x > 0 else "0")
 
         rename_daily = {
@@ -633,7 +632,7 @@ else:
           label="⚾ 單一球員單場最高得分", value="-- 分", delta="尚無紀錄"
       )
 
-  # TAB 3: 🎯 玩家準確度排行榜 (包含單日、單週、賽季累積)
+  # TAB 3: 🎯 玩家準確度排行榜
   with tab3:
     st.header("🎯 玩家陣容準確度排行榜 (Optimality Ratio)")
     st.caption(
@@ -697,7 +696,6 @@ else:
 
         df_merged["accuracy"] = df_merged.apply(calc_ratio, axis=1)
 
-        # 1. 單日準確度
         st.subheader("📅 單日玩家陣容準確度榜")
         acc_dates = sorted(df_merged["date"].unique().tolist(), reverse=True)
         if acc_dates:
@@ -734,7 +732,6 @@ else:
 
         st.divider()
 
-        # 2. 單週準確度 (新功能)
         st.subheader("🗓️ 單週玩家平均準確度榜")
         df_merged["week_range"] = df_merged["date"].apply(get_week_label)
         acc_weeks = sorted(df_merged["week_range"].unique().tolist(), reverse=True)
@@ -761,7 +758,6 @@ else:
 
         st.divider()
 
-        # 3. 賽季總累積準確度
         st.subheader("🏆 賽季玩家平均準確度總榜")
         df_avg_acc = (
             df_merged.groupby("username")["accuracy"]
@@ -929,7 +925,7 @@ else:
     })
     st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
 
-  # TAB 6: 管理者專區 (二階段補償結算，寫入完整細節)
+  # TAB 6: 管理者專區
   with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -1039,11 +1035,9 @@ else:
             col_u3.caption(f"乘數: `x{mult}` ➔ 最終得分: **{final_calc}** 分")
 
           if st.button("🚀 儲存並發布最終結算成績"):
-            # 1. 寫入完美總分
             opt_score, _ = calculate_optimal_score(df_stats, df_players)
             write_to_sheet("optimal_scores", [target_date, int(opt_score)])
 
-            # 2. 寫入球員個人數據
             for _, p_row in df_stats.iterrows():
               write_to_sheet("player_stats", [
                   p_row["name"],
@@ -1051,7 +1045,6 @@ else:
                   int(p_row["calculated_score"]),
               ])
 
-            # 3. 寫入玩家加權後的最終成績與明細 (新增寫入 raw_score 與 c_count)
             success_count = 0
             for u_name, (raw_score, c_count) in comp_selections.items():
               mult = COMPENSATION_MULTIPLIERS.get(c_count, 1.0)
