@@ -36,7 +36,7 @@ except Exception as e:
   SCRIPT_URL = ""
 
 
-# 安全讀取 Google 試算表 (防護空值與大小寫，絕不撞名)
+# 安全讀取 Google 試算表
 def read_sheet(sheet_name):
   if not SHEET_ID:
     return pd.DataFrame()
@@ -628,7 +628,6 @@ else:
     df_opt_scores = read_sheet("optimal_scores")
     df_player_stats = read_sheet("player_stats")
 
-    # 預先計算合理解析紀錄
     u_top_score_val, u_top_score_name, u_top_score_date = "--", "尚無紀錄", ""
     u_top_acc_val, u_top_acc_name, u_top_acc_date = "--", "尚無紀錄", ""
     w_top_score_val, w_top_score_name, w_top_score_date = "--", "尚無紀錄", ""
@@ -641,13 +640,11 @@ else:
       df_s_rec["date"] = df_s_rec["date"].astype(str)
       df_s_rec = df_s_rec.drop_duplicates(subset=["username", "date"], keep="last")
 
-      # 1. 玩家單日最高分紀錄
       max_user_row = df_s_rec.sort_values(by="score", ascending=False).iloc[0]
       u_top_score_val = f"{int(max_user_row['score'])} 分"
       u_top_score_name = max_user_row["username"]
       u_top_score_date = max_user_row["date"]
 
-      # 準備計算準率 (accuracy) 基礎
       opt_dict = {}
       if not df_opt_scores.empty and "optimal_score" in df_opt_scores.columns:
         for _, r in df_opt_scores.iterrows():
@@ -672,13 +669,11 @@ else:
             lambda r: round((r["score"] / r["optimal_score"]) * 100, 1) if r["optimal_score"] > 0 else 0, axis=1
         )
 
-        # 2. 玩家單日最高準確率
         max_acc_row = df_rec_merged.sort_values(by="accuracy", ascending=False).iloc[0]
         u_top_acc_val = f"{max_acc_row['accuracy']}%"
         u_top_acc_name = max_acc_row["username"]
         u_top_acc_date = max_acc_row["date"]
 
-        # 4. 玩家單週最高平均準率
         df_rec_merged["week_range"] = df_rec_merged["date"].apply(get_week_label)
         w_acc_grp = df_rec_merged.groupby(["username", "week_range"])["accuracy"].mean().reset_index()
         max_w_acc_row = w_acc_grp.sort_values(by="accuracy", ascending=False).iloc[0]
@@ -686,7 +681,6 @@ else:
         w_top_acc_name = max_w_acc_row["username"]
         w_top_acc_date = max_w_acc_row["week_range"]
 
-      # 3. 玩家單週最高總分
       df_s_rec["week_range"] = df_s_rec["date"].apply(get_week_label)
       w_score_grp = df_s_rec.groupby(["username", "week_range"])["score"].sum().reset_index()
       max_w_score_row = w_score_grp.sort_values(by="score", ascending=False).iloc[0]
@@ -702,21 +696,18 @@ else:
       p_top_score_name = max_p_row["name"]
       p_top_score_date = max_p_row["date"]
 
-    # 第一行 (2個卡片)
     r1_col1, r1_col2 = st.columns(2)
     r1_col1.metric(label="👑 1. 玩家單日最高分紀錄", value=u_top_score_val, delta=f"{u_top_score_name} ({u_top_score_date})" if u_top_score_date else u_top_score_name)
     r1_col2.metric(label="🎯 2. 玩家單日最高準確率", value=u_top_acc_val, delta=f"{u_top_acc_name} ({u_top_acc_date})" if u_top_acc_date else u_top_acc_name)
 
-    st.write("") # 空行間隔
+    st.write("")
 
-    # 第二行 (2個卡片)
     r2_col1, r2_col2 = st.columns(2)
     r2_col1.metric(label="🗓️ 3. 玩家單週最高總分", value=w_top_score_val, delta=f"{w_top_score_name} ({w_top_score_date})" if w_top_score_date else w_top_score_name)
     r2_col2.metric(label="📈 4. 玩家單週最高平均準率", value=w_top_acc_val, delta=f"{w_top_acc_name} ({w_top_acc_date})" if w_top_acc_date else w_top_acc_name)
 
-    st.write("") # 空行間隔
+    st.write("")
 
-    # 第三行 (1個卡片)
     r3_col1, _ = st.columns([1, 1])
     r3_col1.metric(label="⚾ 5. 單一球員單場最高得分", value=p_top_score_val, delta=f"{p_top_score_name} ({p_top_score_date})" if p_top_score_date else p_top_score_name)
 
@@ -1031,7 +1022,7 @@ else:
     })
     st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
 
-  # TAB 6: 管理者專區
+  # TAB 6: 管理者專區 (包含未提交玩家自動補齊功能)
   with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -1086,7 +1077,7 @@ else:
 
           st.session_state.temp_df_stats = df_stats
           st.session_state.temp_target_date = target_date
-          st.success("✅ 數據解析成功！請於下方核對玩家補償人數並進行儲存。")
+          st.success("✅ 數據解析成功！請於下方核對玩家陣容與補償人數。")
         except Exception as e:
           st.error(f"❌ 數據解析失敗: {e}")
 
@@ -1109,18 +1100,71 @@ else:
               " players.csv 即可。"
           )
 
+        # 讀取雲端陣容並檢查是否有漏提交的玩家
         df_cloud_lineups = read_sheet("lineups")
-        if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
-          df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
-          df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
-          df_target = df_target.drop_duplicates(
-              subset=["username", "date"], keep="last"
-          )
-        else:
-          df_target = pd.DataFrame()
+        all_known_users = []
+        submitted_users = []
+        missing_users = []
 
-        if df_target.empty:
-          st.warning(f"⚠️ {target_date} 沒有任何玩家提交陣容！")
+        if not df_cloud_lineups.empty and "username" in df_cloud_lineups.columns:
+          df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
+          
+          # 曾經玩過的所有玩家名單
+          all_known_users = df_cloud_lineups["username"].dropna().unique().tolist()
+          
+          # target_date 當天已提交的玩家
+          df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
+          if not df_target.empty:
+            submitted_users = df_target["username"].unique().tolist()
+          
+          missing_users = [u for u in all_known_users if u not in submitted_users]
+
+        # 提示與自動補齊未提交玩家按鈕
+        if missing_users:
+          st.warning(f"⚠️ 偵測到有 {len(missing_users)} 位玩家尚未提交 {target_date} 陣容：【{', '.join(missing_users)}】")
+          if st.button(f"🤖 一鍵幫【{len(missing_users)}位】未提交玩家帶入前次陣容 (標記 [系統自動帶入])"):
+            auto_count = 0
+            now_auto_str = now_tw.strftime("%Y-%m-%d %H:%M:%S") + " [系統自動帶入]"
+            
+            for m_user in missing_users:
+              # 尋找歷史最新陣容
+              u_history = df_cloud_lineups[
+                  (df_cloud_lineups["username"] == m_user) &
+                  (df_cloud_lineups["date"] <= target_date)
+              ]
+              if not u_history.empty:
+                last_l = u_history.iloc[-1]
+                auto_row = [
+                    m_user,
+                    target_date,
+                    last_l.get("catcher", ""),
+                    last_l.get("if1", ""),
+                    last_l.get("if2", ""),
+                    last_l.get("if3", ""),
+                    last_l.get("if4", ""),
+                    last_l.get("of1", ""),
+                    last_l.get("of2", ""),
+                    last_l.get("of3", ""),
+                    last_l.get("dh", ""),
+                    now_auto_str
+                ]
+                if write_to_sheet("lineups", auto_row):
+                  auto_count += 1
+            
+            st.success(f"🎉 已成功替 {auto_count} 位玩家寫入歷史陣容！頁面重新載入中...")
+            st.rerun()
+
+        # 重新整理並取得最終當日陣容
+        df_cloud_lineups_updated = read_sheet("lineups")
+        if not df_cloud_lineups_updated.empty and "date" in df_cloud_lineups_updated.columns:
+          df_cloud_lineups_updated["date"] = df_cloud_lineups_updated["date"].astype(str)
+          df_target_final = df_cloud_lineups_updated[df_cloud_lineups_updated["date"] == target_date]
+          df_target_final = df_target_final.drop_duplicates(subset=["username", "date"], keep="last")
+        else:
+          df_target_final = pd.DataFrame()
+
+        if df_target_final.empty:
+          st.warning(f"⚠️ {target_date} 目前沒有任何玩家提交陣容！")
         else:
           st.markdown("---")
           st.markdown("### 🛡️ 第二步：玩家缺席/延賽補償設定")
@@ -1129,7 +1173,7 @@ else:
           )
 
           comp_selections = {}
-          for _, row in df_target.iterrows():
+          for _, row in df_target_final.iterrows():
             u_name = row["username"]
             players_selected = [
                 row["catcher"],
