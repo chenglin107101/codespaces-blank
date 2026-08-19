@@ -84,35 +84,6 @@ def format_medal_index(df):
   return df
 
 
-# 側邊欄：身分驗證
-st.sidebar.title("👤 玩家身分驗證")
-user_input = st.sidebar.text_input("請輸入您的姓名 / 暱稱", value="")
-
-is_admin_verified = False
-
-if user_input.strip() != "":
-  st.session_state.user = user_input.strip()
-
-  if st.session_state.user == ADMIN_USER:
-    admin_pin = st.sidebar.text_input(
-        "🔑 請輸入管理員驗證碼", type="password", key="admin_pin_input"
-    )
-    if admin_pin == ADMIN_PIN:
-      st.sidebar.success(f"目前身分：**{st.session_state.user}** (管理員已驗證)")
-      is_admin_verified = True
-    else:
-      st.sidebar.warning("🔒 身分為管理員，請輸入正確驗證碼以啟用權限！")
-      is_admin_verified = False
-  else:
-    st.sidebar.success(f"目前身分：**{st.session_state.user}**")
-    is_admin_verified = False
-else:
-  st.session_state.user = None
-  is_admin_verified = False
-
-st.session_state.is_admin = is_admin_verified
-
-
 # 精準取得指定日期的截止時間
 def get_cutoff_time_for_date(date_str):
   df_settings = read_sheet("settings")
@@ -156,6 +127,119 @@ if now_tw >= cutoff_dt_today:
   default_game_date = (now_tw + timedelta(days=1)).date()
 else:
   default_game_date = now_tw.date()
+
+
+# 🤖 每日 14:00~15:00 定時自動檢查與提交陣容的核心函數
+def auto_submit_missing_lineups_daily(target_date):
+  df_cloud_lineups = read_sheet("lineups")
+  if df_cloud_lineups.empty or "username" not in df_cloud_lineups.columns:
+    return
+
+  df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
+  
+  # 曾玩過的所有玩家
+  all_users = df_cloud_lineups["username"].dropna().unique().tolist()
+  
+  # 當天已提交陣容的玩家
+  df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
+  submitted_users = df_target["username"].unique().tolist() if not df_target.empty else []
+
+  missing_users = [u for u in all_users if u not in submitted_users]
+
+  if missing_users:
+    now_auto_str = now_tw.strftime("%Y-%m-%d %H:%M:%S") + " [系統自動帶入]"
+    for m_user in missing_users:
+      u_history = df_cloud_lineups[
+          (df_cloud_lineups["username"] == m_user) &
+          (df_cloud_lineups["date"] < target_date)
+      ]
+      if not u_history.empty:
+        last_l = u_history.iloc[-1]
+        auto_row = [
+            m_user,
+            target_date,
+            last_l.get("catcher", ""),
+            last_l.get("if1", ""),
+            last_l.get("if2", ""),
+            last_l.get("if3", ""),
+            last_l.get("if4", ""),
+            last_l.get("of1", ""),
+            last_l.get("of2", ""),
+            last_l.get("of3", ""),
+            last_l.get("dh", ""),
+            now_auto_str
+        ]
+        write_to_sheet("lineups", auto_row)
+
+
+# 觸發條件：若當前時間介於 14:00 ~ 15:00，且 Session 中尚未執行過，則自動執行一次自動帶入
+if 14 <= now_tw.hour < 15 and not st.session_state.get("auto_backup_done", False):
+  auto_submit_missing_lineups_daily(today_str)
+  st.session_state.auto_backup_done = True
+
+
+# 讀取特定日期陣容 (包含系統自動補齊之紀錄)
+def get_complete_lineups_for_date(target_date):
+  df_cloud_lineups = read_sheet("lineups")
+  if df_cloud_lineups.empty or "username" not in df_cloud_lineups.columns:
+    return pd.DataFrame()
+
+  df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
+  all_users = df_cloud_lineups["username"].dropna().unique().tolist()
+  
+  df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
+  submitted_users = df_target["username"].unique().tolist() if not df_target.empty else []
+
+  final_rows = []
+
+  if not df_target.empty:
+    for u in submitted_users:
+      u_row = df_target[df_target["username"] == u].iloc[-1].to_dict()
+      final_rows.append(u_row)
+
+  missing_users = [u for u in all_users if u not in submitted_users]
+  
+  for m_user in missing_users:
+    u_history = df_cloud_lineups[
+        (df_cloud_lineups["username"] == m_user) &
+        (df_cloud_lineups["date"] <= target_date)
+    ]
+    if not u_history.empty:
+      last_l = u_history.iloc[-1].to_dict()
+      last_l["date"] = target_date
+      last_l["submit_time"] = now_tw.strftime("%Y-%m-%d %H:%M:%S") + " [系統自動帶入]"
+      final_rows.append(last_l)
+
+  return pd.DataFrame(final_rows)
+
+
+# 側邊欄：身分驗證
+st.sidebar.title("👤 玩家身分驗證")
+user_input = st.sidebar.text_input("請輸入您的姓名 / 暱稱", value="")
+
+is_admin_verified = False
+
+if user_input.strip() != "":
+  st.session_state.user = user_input.strip()
+
+  if st.session_state.user == ADMIN_USER:
+    admin_pin = st.sidebar.text_input(
+        "🔑 請輸入管理員驗證碼", type="password", key="admin_pin_input"
+    )
+    if admin_pin == ADMIN_PIN:
+      st.sidebar.success(f"目前身分：**{st.session_state.user}** (管理員已驗證)")
+      is_admin_verified = True
+    else:
+      st.sidebar.warning("🔒 身分為管理員，請輸入正確驗證碼以啟用權限！")
+      is_admin_verified = False
+  else:
+    st.sidebar.success(f"目前身分：**{st.session_state.user}**")
+    is_admin_verified = False
+else:
+  st.session_state.user = None
+  is_admin_verified = False
+
+st.session_state.is_admin = is_admin_verified
 
 
 # 球員單日得分計算核心邏輯
@@ -462,15 +546,9 @@ else:
     st.divider()
     st.subheader(f"👀 {game_date} 所有玩家已提交陣容")
 
-    if not df_cloud_lineups.empty and "date" in df_cloud_lineups.columns:
-      df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
-      df_display = df_cloud_lineups[df_cloud_lineups["date"] == game_date]
+    df_display = get_complete_lineups_for_date(game_date)
 
-      if not df_display.empty and "username" in df_display.columns:
-        df_display = df_display.drop_duplicates(
-            subset=["username", "date"], keep="last"
-        )
-
+    if not df_display.empty:
       is_locked = not is_cutoff_passed
 
       rename_dict = {
@@ -489,7 +567,7 @@ else:
       }
       df_display = df_display.rename(columns=rename_dict)
 
-      if is_locked and not df_display.empty:
+      if is_locked:
         st.info(
             f"🔒 尚未到達截止時間（{c_h:02d}:{c_m:02d}），所有玩家選擇的球員保密中！僅顯示提交狀態。"
         )
@@ -507,13 +585,10 @@ else:
         for col in mask_cols:
           if col in df_display.columns:
             df_display[col] = "🔒 保密中"
-    else:
-      df_display = pd.DataFrame()
 
-    if df_display.empty:
-      st.info(f"尚無玩家提交 {game_date} 的陣容。")
-    else:
       st.dataframe(df_display, use_container_width=True, hide_index=True)
+    else:
+      st.info(f"尚無玩家提交 {game_date} 的陣容。")
 
   # TAB 2: 玩家積分排行榜
   with tab2:
@@ -622,7 +697,7 @@ else:
       st.info("尚無單日結算紀錄。")
 
     st.divider()
-    # 大會紀錄 (Hall of Fame) 重新排版：2 - 2 - 1 結構
+    # 大會紀錄 (Hall of Fame)
     st.subheader("🔥 夢幻聯賽大會紀錄 (Hall of Fame)")
 
     df_opt_scores = read_sheet("optimal_scores")
@@ -1022,7 +1097,7 @@ else:
     })
     st.dataframe(df_comp_rules, use_container_width=True, hide_index=True)
 
-  # TAB 6: 管理者專區 (包含未提交玩家自動補齊功能)
+  # TAB 6: 管理者專區
   with tab6:
     st.header("⚙️ 管理者數據匯入與比賽設定")
 
@@ -1100,68 +1175,8 @@ else:
               " players.csv 即可。"
           )
 
-        # 讀取雲端陣容並檢查是否有漏提交的玩家
-        df_cloud_lineups = read_sheet("lineups")
-        all_known_users = []
-        submitted_users = []
-        missing_users = []
-
-        if not df_cloud_lineups.empty and "username" in df_cloud_lineups.columns:
-          df_cloud_lineups["date"] = df_cloud_lineups["date"].astype(str)
-          
-          # 曾經玩過的所有玩家名單
-          all_known_users = df_cloud_lineups["username"].dropna().unique().tolist()
-          
-          # target_date 當天已提交的玩家
-          df_target = df_cloud_lineups[df_cloud_lineups["date"] == target_date]
-          if not df_target.empty:
-            submitted_users = df_target["username"].unique().tolist()
-          
-          missing_users = [u for u in all_known_users if u not in submitted_users]
-
-        # 提示與自動補齊未提交玩家按鈕
-        if missing_users:
-          st.warning(f"⚠️ 偵測到有 {len(missing_users)} 位玩家尚未提交 {target_date} 陣容：【{', '.join(missing_users)}】")
-          if st.button(f"🤖 一鍵幫【{len(missing_users)}位】未提交玩家帶入前次陣容 (標記 [系統自動帶入])"):
-            auto_count = 0
-            now_auto_str = now_tw.strftime("%Y-%m-%d %H:%M:%S") + " [系統自動帶入]"
-            
-            for m_user in missing_users:
-              # 尋找歷史最新陣容
-              u_history = df_cloud_lineups[
-                  (df_cloud_lineups["username"] == m_user) &
-                  (df_cloud_lineups["date"] <= target_date)
-              ]
-              if not u_history.empty:
-                last_l = u_history.iloc[-1]
-                auto_row = [
-                    m_user,
-                    target_date,
-                    last_l.get("catcher", ""),
-                    last_l.get("if1", ""),
-                    last_l.get("if2", ""),
-                    last_l.get("if3", ""),
-                    last_l.get("if4", ""),
-                    last_l.get("of1", ""),
-                    last_l.get("of2", ""),
-                    last_l.get("of3", ""),
-                    last_l.get("dh", ""),
-                    now_auto_str
-                ]
-                if write_to_sheet("lineups", auto_row):
-                  auto_count += 1
-            
-            st.success(f"🎉 已成功替 {auto_count} 位玩家寫入歷史陣容！頁面重新載入中...")
-            st.rerun()
-
-        # 重新整理並取得最終當日陣容
-        df_cloud_lineups_updated = read_sheet("lineups")
-        if not df_cloud_lineups_updated.empty and "date" in df_cloud_lineups_updated.columns:
-          df_cloud_lineups_updated["date"] = df_cloud_lineups_updated["date"].astype(str)
-          df_target_final = df_cloud_lineups_updated[df_cloud_lineups_updated["date"] == target_date]
-          df_target_final = df_target_final.drop_duplicates(subset=["username", "date"], keep="last")
-        else:
-          df_target_final = pd.DataFrame()
+        # 取得包含未提交者的完整當日陣容
+        df_target_final = get_complete_lineups_for_date(target_date)
 
         if df_target_final.empty:
           st.warning(f"⚠️ {target_date} 目前沒有任何玩家提交陣容！")
