@@ -129,7 +129,7 @@ else:
   default_game_date = now_tw.date()
 
 
-# 🤖 每日 14:00~15:00 定時自動檢查與提交陣容的核心函數
+# 🤖 自動檢查並提交缺席玩家陣容的核心函數 (全天候觸發)
 def auto_submit_missing_lineups_daily(target_date):
   df_cloud_lineups = read_sheet("lineups")
   if df_cloud_lineups.empty or "username" not in df_cloud_lineups.columns:
@@ -172,8 +172,8 @@ def auto_submit_missing_lineups_daily(target_date):
         write_to_sheet("lineups", auto_row)
 
 
-# 觸發條件：若當前時間介於 14:00 ~ 15:00，且 Session 中尚未執行過，則自動執行一次自動帶入
-if 14 <= now_tw.hour < 15 and not st.session_state.get("auto_backup_done", False):
+# 全天候自動執行一次：不限制 14~15 點，只要網站載入即檢查並帶入今日紀錄
+if not st.session_state.get("auto_backup_done", False):
   auto_submit_missing_lineups_daily(today_str)
   st.session_state.auto_backup_done = True
 
